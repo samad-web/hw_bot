@@ -43,7 +43,10 @@ selectors:
   product_title: 'div.tw-line-clamp-50'
   product_id: ""
   header_address: 'div[class*="LocationBar__Container"]'
-  out_of_stock: 'div.tw-text-yellow-700'          # the "Coming soon" text in the sticky bottom bar
+  # The sticky bar's status line. Unique page-wide. Blinkit uses TWO unavailable
+  # wordings in this same slot - "Out of stock" (tw-text-grey-700) and "Coming
+  # soon" (tw-text-yellow-700) - so match on text, not colour, and never on a price.
+  out_of_stock: 'div.tw-text-200.tw-font-medium:has-text("Out of stock"), div.tw-text-200.tw-font-medium:has-text("Coming soon")'
 
   # TODO capture these from YOUR logged-in session with a location set.
   # They cannot be derived anonymously: with no delivery address Blinkit reports
