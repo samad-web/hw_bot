@@ -16,3 +16,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+
+# personal reference images dropped in the repo root
+*.jpeg
+*.jpg
