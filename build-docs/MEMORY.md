@@ -48,3 +48,17 @@
 - **Not to be worked around.** Project constraint and spec Section 15 both forbid captcha solving, stealth and evasion tooling. Container has been stopped rather than left retrying.
 - **Documented fallback is the home machine** (PLAN.md risk table, D1). Hosting decision needs revisiting with the user.
 - Untested long shot: the second Mumbai box 1917148 (62.72.30.234) may sit in a different reputation range, but it runs the spaceair production apps.
+
+## 2026-11-07 — Modes B and C are NOT achievable on Blinkit web
+Investigated while trying to harvest Mode C selectors. Evidence, all consistent:
+- Clicking "Add to cart" fires **only Google ad pixels** — zero Blinkit cart/order/checkout API calls. Verified with a network trace on both a mobile UA and a desktop UA (1366x900).
+- `blinkit.com/cart` renders "Oops! something went wrong".
+- The cart button stays at "0 items Rs 0" after a click; the stepper that briefly appears is client-side only and does not survive a reload.
+
+**Conclusion:** Blinkit's web surface is browse-and-display only; the real cart lives in the mobile app. This is not a selector problem — the capability is absent, so no amount of selector work enables Mode B or C here. It matches the user's first observation that coming-soon items appear only in the app.
+
+**Consequences:**
+- Mode A (detect + instant alert) works and is the deliverable. Deployed locally in Docker.
+- `safety.max_orders_total`, wallet balance and the spend cap are moot until an ordering path exists.
+- Auto-ordering would require spec Section 7 option 2 (Android emulator + Appium) — a substantial separate build — or the undocumented mobile API, which the project's constraints rule out.
+- The config-validation guard that blocks Mode C without checkout selectors is doing exactly its job and should stay.
