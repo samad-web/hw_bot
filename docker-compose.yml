@@ -8,7 +8,10 @@ services:
     volumes:
       # Directories, never single files: state.json is rewritten atomically with
       # os.replace(), and replacing a bind-mounted FILE fails with EBUSY.
-      - ./profile:/app/profile     # logged-in Blinkit session
+      # The container keeps its OWN profile. Never mount the host's ./profile:
+      # a Windows Chromium profile cannot be read by Linux Chromium, and the
+      # container writing into it would corrupt the one --login/--capture use.
+      - ./profile-docker:/app/profile
       - ./data:/app/data           # state.json — holds the single-order lock
       - ./logs:/app/logs           # rotating logs + failure captures
       - ./config.yaml:/app/config.yaml:ro

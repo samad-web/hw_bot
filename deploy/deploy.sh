@@ -23,7 +23,7 @@ ssh "$HOST" 'command -v docker >/dev/null 2>&1 || curl -fsSL https://get.docker.
 echo "==> Creating $REMOTE_DIR"
 # Directories, not single files: state.json is rewritten with os.replace(),
 # which fails with EBUSY against a bind-mounted file.
-ssh "$HOST" "mkdir -p '$REMOTE_DIR/data' '$REMOTE_DIR/logs' '$REMOTE_DIR/profile'"
+ssh "$HOST" "mkdir -p '$REMOTE_DIR/data' '$REMOTE_DIR/logs' '$REMOTE_DIR/profile-docker'"
 
 echo "==> Copying source"
 scp -q Dockerfile docker-compose.yml requirements.txt config.yaml \

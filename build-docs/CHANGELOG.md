@@ -61,3 +61,9 @@
 - `delivery.label` set to "Doddakannelli": Blinkit shows no pincode, so the label must appear in the rendered address string.
 
 Live verification: four consecutive cycles, both cars correctly OUT_OF_STOCK, no errors. WhatsApp alerting confirmed working end to end.
+
+## 2026-11-07 — fix(deploy): run locally in Docker after the VPS was Cloudflare-blocked
+- Session import now triggers when the profile holds no Blinkit cookies, instead of only when the profile directory is empty. The old check silently skipped import for a profile that exists but cannot be read — exactly a Windows profile mounted into a Linux container — leaving the bot logged out.
+- Container gets its own `profile-docker/` volume. Mounting the host's Windows `profile/` both failed to decrypt and risked corrupting the profile `--login`/`--capture` rely on.
+- Verified locally: session imported (19 cookies, 1 origin), both cars OUT_OF_STOCK across repeated cycles, no Cloudflare challenge on a residential IP.
+- Verified `restart: unless-stopped` fires on a real crash (control container restarted twice). Note `docker kill` never triggers it — Docker treats a manual kill as user-initiated, so it is not a valid crash test.

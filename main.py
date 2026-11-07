@@ -411,9 +411,6 @@ def main(argv: list[str] | None = None) -> int:
     last_blind_alert_ts = 0.0
 
     profile_dir = DEFAULT_PROFILE_DIR
-    # A brand-new profile on the VPS has no session; restore it from the JSON
-    # exported on the machine where the OTP login actually happened.
-    profile_was_empty = not (profile_dir.exists() and any(profile_dir.iterdir()))
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     def launch(pw: Any) -> tuple[Any, Any]:
@@ -432,8 +429,23 @@ def main(argv: list[str] | None = None) -> int:
     with sync_playwright() as p:
         browser_context, page = launch(p)
 
-        if profile_was_empty and import_session(browser_context):
-            logger.info("Fresh profile: restored session from %s", DEFAULT_SESSION_FILE)
+        # Import the portable session whenever this profile holds no Blinkit
+        # cookies. Testing the cookies rather than "is the directory empty"
+        # also covers a profile that exists but cannot be read - which is
+        # exactly how a Windows profile looks mounted into a Linux container.
+        try:
+            has_session = bool(browser_context.cookies("https://blinkit.com"))
+        except Exception:
+            has_session = False
+        if not has_session:
+            if import_session(browser_context):
+                logger.info("No Blinkit session in profile; restored from %s",
+                            DEFAULT_SESSION_FILE)
+            else:
+                logger.warning(
+                    "No Blinkit session in the profile and no usable %s. The bot will "
+                    "see every product as unavailable. Run --login then --export-session.",
+                    DEFAULT_SESSION_FILE)
 
         try:
             while running:
