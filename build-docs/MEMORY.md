@@ -41,3 +41,10 @@
 - **2026-11-07 — Blinkit shows a "Get the blinkit app" interstitial** that covers the page and swallows clicks. Escape via `div[class*="DownloadAppModal__ContinueLink"]`. Dismissed at the top of every check and before every cart click.
 - **2026-11-07 — Blinkit renders no pincode.** The address is a Plus Code plus area, so `delivery.label` must be a token appearing in that string — set to "Doddakannelli".
 - **2026-11-07 — The action bar hydrates AFTER the location bar**, causing intermittent `unknown_layout`. Fixed with `CTA_TIMEOUT_MS`; four consecutive live cycles then ran clean.
+
+## 2026-11-07 — VPS deployment BLOCKED by Cloudflare
+- Deployed to Hostinger VPS 1714755 (93.127.199.127, Mumbai). Image built, container ran, `session.json` imported cleanly (19 cookies, 1 origin). **But every page returns a Cloudflare challenge**: captured HTML contains `Just a moment...`, `captcha` and `cf-` markers, and **zero** product markup — all selectors match 0.
+- **Risk D1 has materialised.** The datacenter IP is bot-flagged. The same code, same session and same selectors work perfectly from the home machine (four clean cycles, both cars OUT_OF_STOCK).
+- **Not to be worked around.** Project constraint and spec Section 15 both forbid captcha solving, stealth and evasion tooling. Container has been stopped rather than left retrying.
+- **Documented fallback is the home machine** (PLAN.md risk table, D1). Hosting decision needs revisiting with the user.
+- Untested long shot: the second Mumbai box 1917148 (62.72.30.234) may sit in a different reputation range, but it runs the spaceair production apps.
