@@ -7,6 +7,7 @@ and executes cart/checkout actions according to configured mode and safety rules
 from __future__ import annotations
 
 import argparse
+import json
 import dataclasses
 import logging
 import signal
@@ -30,6 +31,55 @@ import state
 logger = logging.getLogger("hw_bot")
 
 DEFAULT_PROFILE_DIR = Path("profile")
+DEFAULT_SESSION_FILE = Path("session.json")
+
+
+def export_session(context: Any, path: Path = DEFAULT_SESSION_FILE) -> Path:
+    """Write cookies and localStorage out as portable JSON.
+
+    A Chromium profile directory does NOT move between operating systems: on
+    Windows the cookie store is encrypted with DPAPI, which Linux cannot read,
+    so a profile copied to the VPS arrives logged out. storage_state is plain
+    JSON and transfers cleanly.
+    """
+    context.storage_state(path=str(path))
+    return path
+
+
+def import_session(context: Any, path: Path = DEFAULT_SESSION_FILE) -> bool:
+    """Load an exported session into a fresh profile. Returns True if applied."""
+    p = Path(path)
+    if not p.is_file():
+        return False
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Could not read %s: %s", p, exc)
+        return False
+
+    cookies = data.get("cookies") or []
+    if cookies:
+        context.add_cookies(cookies)
+
+    # localStorage is where Blinkit keeps the chosen delivery location, so
+    # cookies alone are not enough to restore the session.
+    origins = data.get("origins") or []
+    if origins:
+        page = context.new_page()
+        for origin in origins:
+            try:
+                page.goto(origin["origin"], wait_until="domcontentloaded", timeout=30000)
+                page.evaluate(
+                    "items => { for (const i of items) localStorage.setItem(i.name, i.value); }",
+                    origin.get("localStorage", []),
+                )
+            except Exception as exc:
+                logger.warning("Could not restore localStorage for %s: %s",
+                               origin.get("origin"), exc)
+        page.close()
+
+    logger.info("Imported session: %d cookie(s), %d origin(s).", len(cookies), len(origins))
+    return True
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -41,6 +91,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Run without executing pay click")
     parser.add_argument("--login", action="store_true", help="Open headful browser to log in locally and save session")
     parser.add_argument("--capture", action="store_true", help="Capture HTML & screenshot of product page and exit")
+    parser.add_argument("--export-session", action="store_true",
+                        help="Write session.json (portable cookies+localStorage) from the local profile")
+    parser.add_argument("--import-session", action="store_true",
+                        help="Load session.json into this machine's profile, then exit")
     return parser.parse_args(argv)
 
 
@@ -76,6 +130,14 @@ def run_login_flow(cfg: Config, profile_dir: Path = DEFAULT_PROFILE_DIR) -> int:
         except (KeyboardInterrupt, EOFError):
             pass
 
+        # Export BEFORE closing: the profile itself cannot be copied to a Linux
+        # VPS (Windows encrypts the cookie store with DPAPI), but this JSON can.
+        exported = None
+        try:
+            exported = export_session(context)
+        except Exception as exc:
+            logger.warning("Could not export session.json: %s", exc)
+
         # The user may well have closed the window rather than pressing Enter;
         # the profile is already flushed to disk by then, so this is not an error.
         try:
@@ -84,7 +146,52 @@ def run_login_flow(cfg: Config, profile_dir: Path = DEFAULT_PROFILE_DIR) -> int:
             logger.debug("Browser context was already closed: %s", exc)
 
     print("\nSession saved to the profile directory.")
+    if exported:
+        print(f"Portable session written to {exported} - copy THIS to the VPS, not profile/.")
     print("Next: python main.py --capture")
+    return 0
+
+
+def run_session_flow(cfg: Config, export: bool,
+                     profile_dir: Path = DEFAULT_PROFILE_DIR) -> int:
+    """Export this machine's session to portable JSON, or import it into the profile."""
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            headless=True,
+            viewport={"width": 412, "height": 915},
+            user_agent=(
+                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+            ),
+        )
+        try:
+            if export:
+                # storage_state only records localStorage for origins this
+                # context has actually visited, and Blinkit keeps the chosen
+                # delivery location there - so visit before exporting.
+                page = context.new_page()
+                try:
+                    url = (cfg.products[0].url if cfg.products else "") or "https://blinkit.com"
+                    page.goto(url, wait_until="networkidle", timeout=60000)
+                    page.wait_for_timeout(3000)
+                except Exception as exc:
+                    logger.warning("Could not load Blinkit before export: %s", exc)
+                path = export_session(context)
+                page.close()
+                print(f"Wrote {path}.")
+                print("Copy THIS to the VPS. Do not copy profile/: a Windows Chromium "
+                      "profile cannot be decrypted on Linux.")
+            else:
+                ok = import_session(context)
+                print("Session imported into the profile."
+                      if ok else "No usable session.json found; nothing imported.")
+        finally:
+            try:
+                context.close()
+            except Exception as exc:
+                logger.debug("Context already closed: %s", exc)
     return 0
 
 
@@ -249,6 +356,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.capture:
         return run_capture_flow(cfg)
 
+    if args.export_session or args.import_session:
+        return run_session_flow(cfg, export=args.export_session)
+
     # Load persistent state
     bot_state = state.load(args.state)
     if bot_state.get("corrupt"):
@@ -301,6 +411,9 @@ def main(argv: list[str] | None = None) -> int:
     last_blind_alert_ts = 0.0
 
     profile_dir = DEFAULT_PROFILE_DIR
+    # A brand-new profile on the VPS has no session; restore it from the JSON
+    # exported on the machine where the OTP login actually happened.
+    profile_was_empty = not (profile_dir.exists() and any(profile_dir.iterdir()))
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     def launch(pw: Any) -> tuple[Any, Any]:
@@ -318,6 +431,9 @@ def main(argv: list[str] | None = None) -> int:
 
     with sync_playwright() as p:
         browser_context, page = launch(p)
+
+        if profile_was_empty and import_session(browser_context):
+            logger.info("Fresh profile: restored session from %s", DEFAULT_SESSION_FILE)
 
         try:
             while running:

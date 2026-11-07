@@ -12,5 +12,9 @@ services:
       - ./data:/app/data           # state.json — holds the single-order lock
       - ./logs:/app/logs           # rotating logs + failure captures
       - ./config.yaml:/app/config.yaml:ro
+      # Portable login, exported on the machine where the OTP happened. A
+      # Windows Chromium profile cannot be decrypted on Linux, so the session
+      # travels as JSON and is imported into the fresh profile on first run.
+      - ./session.json:/app/session.json:ro
     environment:
       - TZ=Asia/Kolkata

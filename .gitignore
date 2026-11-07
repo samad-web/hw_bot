@@ -20,3 +20,6 @@ venv/
 # personal reference images dropped in the repo root
 *.jpeg
 *.jpg
+
+# portable session export: contains live auth cookies
+session.json
