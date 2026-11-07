@@ -19,6 +19,8 @@ logger = logging.getLogger("hw_bot")
 # How long to let the client-side app fill in the delivery address before
 # treating an empty location bar as drift.
 HYDRATION_TIMEOUT_MS = 8000
+# The sticky action bar renders after the location bar, so it needs its own wait.
+CTA_TIMEOUT_MS = 8000
 
 
 class CheckResultKind(str, Enum):
@@ -34,6 +36,26 @@ class CheckResult:
     message: str = ""
     product_title: str = ""
     header_address: str = ""
+
+
+def dismiss_interstitials(page: Any, cfg: Config) -> bool:
+    """Close Blinkit's "get the app" overlay if it is covering the page.
+
+    It appears unpredictably, sits above the product action bar, and swallows
+    clicks, so every read and every click has to get past it first.
+    """
+    sel = getattr(cfg.selectors, "dismiss_modal", "")
+    if not sel:
+        return False
+    try:
+        if page.is_visible(sel):
+            page.click(sel)
+            page.wait_for_timeout(800)
+            logger.info("Dismissed the Blinkit app-download interstitial.")
+            return True
+    except Exception as exc:
+        logger.debug("Could not dismiss interstitial: %s", exc)
+    return False
 
 
 def check(page: Any, cfg: Config, product: ProductConfig) -> CheckResult:
@@ -59,7 +81,10 @@ def check(page: Any, cfg: Config, product: ProductConfig) -> CheckResult:
             message="Neither 'add_button' nor 'out_of_stock' selector is configured",
         )
 
-    # 2. Check for login wall
+    # 2. Clear any overlay before reading anything underneath it.
+    dismiss_interstitials(page, cfg)
+
+    # Check for login wall
     if selectors.login_wall:
         try:
             if page.is_visible(selectors.login_wall):
@@ -155,7 +180,16 @@ def check(page: Any, cfg: Config, product: ProductConfig) -> CheckResult:
             header_address=addr_text,
         )
 
-    # 5. Check CTA / stock status
+    # 5. Check CTA / stock status.
+    # The action bar hydrates after the address does. Reading it too early
+    # yields a spurious unknown_layout, which costs a backoff and an alert.
+    cta_sel = ", ".join(s for s in (selectors.add_button, selectors.out_of_stock) if s)
+    if cta_sel:
+        try:
+            page.wait_for_selector(cta_sel, timeout=CTA_TIMEOUT_MS, state="visible")
+        except Exception:
+            logger.debug("Action bar did not render within %dms", CTA_TIMEOUT_MS)
+
     try:
         # Check quantity stepper first (if product is already in cart or active stepper)
         if selectors.quantity_stepper and page.is_visible(selectors.quantity_stepper):

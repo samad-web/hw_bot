@@ -50,3 +50,14 @@
 - `add_button` and all cart/checkout selectors: need a capture from a logged-in session with a delivery address.
 - Delivery label and pincode are still placeholders, so modes B and C refuse to start.
 - Order-history check before retry, and the card OTP relay, remain unimplemented.
+
+## 2026-11-07 — feat(watcher): live-verified selectors and overlay handling
+- `add_button` set to the sticky-bar "Add to cart" control, scoped so recommendation-card "ADD" buttons cannot match.
+- New `dismiss_modal` selector; the Blinkit app-download interstitial is closed at the top of every check and before every cart click.
+- New `bar_price` selector for a pre-cart price sanity check.
+- Added a wait for the action bar, which hydrates after the location bar and caused intermittent `unknown_layout` errors.
+- `--capture` now waits for networkidle plus real text, captures every target, and prints what each selector actually matches.
+- Fixed `--login` crashing with TargetClosedError when the browser window is closed instead of pressing Enter.
+- `delivery.label` set to "Doddakannelli": Blinkit shows no pincode, so the label must appear in the rendered address string.
+
+Live verification: four consecutive cycles, both cars correctly OUT_OF_STOCK, no errors. WhatsApp alerting confirmed working end to end.

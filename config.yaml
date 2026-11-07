@@ -17,10 +17,13 @@ products:
     quantity: 1
 
 delivery:
-  label: "Home"               # TODO saved address label on the account
+  # Blinkit renders the saved address as a Plus Code plus area, e.g.
+  # "WM5V+49W, Doddakannelli, Bengaluru, Karnataka" - there is no pincode on the
+  # page, so the label must be a token that actually appears in that string.
+  label: "Doddakannelli"
   lat: 0.0
   lng: 0.0
-  pincode: "000000"           # TODO required before mode B or C will start
+  pincode: "560035"           # not shown on the page; used only as a fallback match
 
 mode: "A"                     # A notify only | B cart + confirm | C full auto-order
 
@@ -62,7 +65,14 @@ selectors:
   # These cannot be derived anonymously: with no address Blinkit reports every
   # product unavailable, so the in-stock markup never renders.
   # Run: python main.py --capture   (on an IN-STOCK product page)
-  add_button: ""
+  # The main CTA in the sticky bar. MUST stay scoped to that bar: recommendation
+  # cards further down the page carry their own role=button "ADD" controls, and
+  # an unscoped match would buy the wrong car.
+  add_button: 'div.tw-items-center.tw-justify-between.tw-p-3 div[role="button"]:has-text("Add to cart")'
+  # Blinkit interstitially pushes its app over the page; this is the escape link.
+  dismiss_modal: 'div[class*="DownloadAppModal__ContinueLink"]'
+  # Unit price shown in the sticky bar, used as a pre-cart sanity check.
+  bar_price: 'div.tw-items-center.tw-justify-between.tw-p-3 div.tw-text-400.tw-font-bold' 
   quantity_stepper: ""
   login_wall: ""
   cart_open: ""

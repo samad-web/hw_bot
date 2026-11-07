@@ -76,6 +76,8 @@ class SelectorsConfig:
     product_title: str = ""
     product_id: str = ""
     add_button: str = ""
+    dismiss_modal: str = ""
+    bar_price: str = ""
     out_of_stock: str = ""
     quantity_stepper: str = ""
     header_address: str = ""
@@ -270,6 +272,8 @@ def load_config(
         product_title=str(sel_raw.get("product_title", "")).strip(),
         product_id=str(sel_raw.get("product_id", "")).strip(),
         add_button=str(sel_raw.get("add_button", "")).strip(),
+        dismiss_modal=str(sel_raw.get("dismiss_modal", "")).strip(),
+        bar_price=str(sel_raw.get("bar_price", "")).strip(),
         out_of_stock=str(sel_raw.get("out_of_stock", "")).strip(),
         quantity_stepper=str(sel_raw.get("quantity_stepper", "")).strip(),
         header_address=str(sel_raw.get("header_address", "")).strip(),

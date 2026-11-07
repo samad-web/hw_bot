@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+import checker
 import state
 from config import Config, ProductConfig
 
@@ -118,6 +119,10 @@ def add_to_cart(page: Any, cfg: Config, product: ProductConfig) -> CartResult:
         return CartResult(success=False, error="Selector 'add_button' is not configured")
 
     try:
+        # The app-download overlay swallows clicks; clear it before touching
+        # anything, not just before reading.
+        checker.dismiss_interstitials(page, cfg)
+
         # Check if button is visible
         if not page.is_visible(selectors.add_button):
             # Check if sold out in the meantime

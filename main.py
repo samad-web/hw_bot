@@ -76,38 +76,94 @@ def run_login_flow(cfg: Config, profile_dir: Path = DEFAULT_PROFILE_DIR) -> int:
         except (KeyboardInterrupt, EOFError):
             pass
 
-        context.close()
+        # The user may well have closed the window rather than pressing Enter;
+        # the profile is already flushed to disk by then, so this is not an error.
+        try:
+            context.close()
+        except Exception as exc:
+            logger.debug("Browser context was already closed: %s", exc)
 
-    print("\n✅ Session saved to profile directory! You can now copy 'profile/' to your VPS.")
+    print("\nSession saved to the profile directory.")
+    print("Next: python main.py --capture")
     return 0
 
 
+REPORTED_SELECTORS = (
+    "product_title", "header_address", "out_of_stock", "add_button",
+    "quantity_stepper", "login_wall", "cart_open",
+)
+
+
+def report_selectors(page: Any, cfg: Config, product: Any) -> None:
+    """Print what each configured selector actually matches on the live page.
+
+    This is the whole point of --capture: turning "it says ERROR" into "this
+    selector matched nothing and that one matched four things".
+    """
+    print(f"\n--- {product.id}  {product.name}")
+    for name in REPORTED_SELECTORS:
+        sel = getattr(cfg.selectors, name, "")
+        if not sel:
+            print(f"  {name:<17} -- not configured --")
+            continue
+        try:
+            count = len(page.query_selector_all(sel))
+            el = page.query_selector(sel)
+            text = ""
+            if el:
+                text = (el.inner_text() or "").strip().replace("\n", " / ")[:70]
+            flag = "" if count == 1 else "   <-- CHECK"
+            print(f"  {name:<17} matches={count:<3} text={text!r}{flag}")
+        except Exception as exc:
+            print(f"  {name:<17} SELECTOR ERROR: {exc}")
+
+
 def run_capture_flow(cfg: Config, profile_dir: Path = DEFAULT_PROFILE_DIR) -> int:
-    """Load product page headless, dump HTML and screenshot to logs/capture/, and exit."""
+    """Capture every target page and report what the configured selectors see."""
     saved: list[str] = []
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
             headless=True,
             viewport={"width": 412, "height": 915},
+            user_agent=(
+                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+            ),
         )
         page = context.new_page()
-        # Capture every target, so selectors can be compared across pages.
         for product in cfg.products:
             url = product.url or "https://blinkit.com"
             logger.info("Capturing %s (%s)...", product.id or "home", url)
             try:
-                page.goto(url, wait_until="domcontentloaded")
-                page.wait_for_timeout(4000)  # let the location bar and CTA hydrate
+                # Blinkit renders the product block and the location bar only
+                # after hydration, so domcontentloaded is far too early.
+                page.goto(url, wait_until="networkidle", timeout=60000)
             except Exception as exc:
-                logger.warning("Capture navigation failed for %s: %s", url, exc)
+                logger.warning("Capture navigation issue for %s: %s", url, exc)
+
+            for sel_name in ("product_title", "header_address"):
+                sel = getattr(cfg.selectors, sel_name, "")
+                if not sel:
+                    continue
+                try:
+                    page.wait_for_function(
+                        "sel => { const el = document.querySelector(sel);"
+                        " return !!el && el.innerText.trim().length > 0; }",
+                        arg=sel, timeout=20000,
+                    )
+                except Exception:
+                    logger.warning("%s never produced text within 20s: %s", sel_name, sel)
+            page.wait_for_timeout(2000)
+
             cap_dir = hardening.save_failure_capture(page, f"capture_{product.id or 'home'}")
             if cap_dir:
                 saved.append(str(cap_dir))
+            report_selectors(page, cfg, product)
         context.close()
 
     if saved:
-        print("Captured:")
+        print("\nSaved:")
         for s in saved:
             print(f"  {s}")
         return 0
