@@ -4,7 +4,7 @@
 product:
   name: "Hot Wheels <exact model name>"      # TODO must match the product title on the page
   url: ""                                     # TODO Blinkit product URL; empty = search by keyword
-  search_keywords: ["hot wheels"]
+  search_keywords: ["hot wheels"]   # unused while out of stock: Blinkit hides coming-soon items from search, so product.url is REQUIRED
   max_price_inr: 0                            # abort above this. 0 = unset (rejected in mode C)
   quantity: 1
 
@@ -39,7 +39,7 @@ selectors:
   product_title: ""
   product_id: ""
   add_button: ""
-  out_of_stock: ""        # "Notify Me" / "Out of stock" indicator
+  out_of_stock: ""        # the "Coming soon" element (Blinkit does not use "Notify Me")
   quantity_stepper: ""
   header_address: ""      # delivery address shown in the page header
   login_wall: ""          # element that only appears when logged out
