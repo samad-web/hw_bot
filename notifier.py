@@ -169,22 +169,33 @@ def handle_command(
     args = parts[1:]
 
     if command == "/status":
-        can_ord, ord_reason = state.can_order(current_state, cfg.safety.max_orders_total)
         wa_status = get_whatsapp_status(cfg)
-        wa_desc = "Connected" if wa_status.get("connected") else ("Configured (Offline)" if wa_status.get("configured") else "Not configured")
+        wa_desc = "Connected" if wa_status.get("connected") else (
+            "Configured (Offline)" if wa_status.get("configured") else "Not configured")
 
-        status_msg = (
-            f"🤖 *Bot Status*\n"
-            f"• Mode: {current_state.get('mode') or cfg.mode}\n"
-            f"• Paused: {current_state.get('paused', False)}\n"
-            f"• Can order: {can_ord} ({ord_reason if not can_ord else 'Ready'})\n"
-            f"• Order placed: {current_state.get('order_placed', False)}\n"
-            f"• Order ID: {current_state.get('order_id') or 'None'}\n"
-            f"• Last check: {current_state.get('last_status', 'Never')}\n"
-            f"• Consecutive errors: {current_state.get('consecutive_errors', 0)}\n"
-            f"• Telegram: Connected\n"
-            f"• WhatsApp: {wa_desc}"
-        )
+        orders = current_state.get("orders") or {}
+        lines = []
+        for q in cfg.products:
+            rec = orders.get(q.id)
+            if rec:
+                lines.append(f"   BOUGHT {q.name} (order {rec.get('order_id')}, Rs {rec.get('spent', 0):.0f})")
+            else:
+                ok, why = state.can_order(current_state, q.id, cfg.safety.max_orders_total)
+                lines.append(f"   watching {q.name}" + ("" if ok else f" [BLOCKED: {why}]"))
+
+        cap = (f" of Rs {cfg.safety.max_total_spend_inr:.0f} cap"
+               if cfg.safety.max_total_spend_inr else "")
+        status_msg = "\n".join([
+            "Bot Status",
+            f"- Mode: {current_state.get('mode') or cfg.mode}",
+            f"- Paused: {current_state.get('paused', False)}",
+            f"- Bought: {len(orders)}/{len(cfg.products)}, "
+            f"total Rs {current_state.get('total_spent', 0):.0f}{cap}",
+            *lines,
+            f"- Last check: {current_state.get('last_status', 'Never')}",
+            f"- Consecutive errors: {current_state.get('consecutive_errors', 0)}",
+            f"- Telegram: Connected | WhatsApp: {wa_desc}",
+        ])
         return status_msg, current_state, False
 
     elif command == "/pause":
@@ -202,7 +213,8 @@ def handle_command(
         if not args or args[0].upper() not in {"A", "B", "C"}:
             return "Usage: /mode <A|B|C>", current_state, False
         new_mode = args[0].upper()
-        if new_mode == "C" and (cfg.payment.max_order_value_inr <= 0 or cfg.product.max_price_inr <= 0):
+        if new_mode == "C" and (cfg.payment.max_order_value_inr <= 0
+                                or any(q.max_price_inr <= 0 for q in cfg.products)):
             return "❌ Cannot switch to Mode C: price ceilings not configured in config.yaml.", current_state, False
         updated = state.save(current_state, state_path, mode=new_mode)
         reply = f"✅ Switched to Mode {new_mode}."

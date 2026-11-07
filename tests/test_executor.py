@@ -7,39 +7,7 @@ import state
 from config import Config, ProductConfig, DeliveryConfig, PollingConfig, PaymentConfig, SafetyConfig, ReliabilityConfig, SelectorsConfig, TelegramConfig, EvolutionConfig
 
 
-@pytest.fixture
-def mock_config() -> Config:
-    return Config(
-        product=ProductConfig(
-            name="Hot Wheels Nissan Skyline GT-R",
-            max_price_inr=200.0,
-            quantity=1,
-        ),
-        delivery=DeliveryConfig(
-            label="Home",
-            pincode="400001",
-        ),
-        mode="C",
-        polling=PollingConfig(),
-        payment=PaymentConfig(
-            priority=["blinkit_wallet"],
-            max_order_value_inr=300.0,
-        ),
-        safety=SafetyConfig(max_orders_total=1),
-        reliability=ReliabilityConfig(),
-        selectors=SelectorsConfig(
-            checkout_button="button.checkout-btn",
-            wallet_balance="span.wallet-bal",
-            pay_button="button.pay-btn",
-            order_confirmation="div.confirmation",
-            order_id="span.order-id",
-        ),
-        telegram=TelegramConfig(),
-        evolution=EvolutionConfig(),
-    )
-
-
-def test_validate_cart_price_ceiling(mock_config: Config):
+def test_validate_cart_price_ceiling(mock_config: Config, target):
     s = dict(state.DEFAULTS)
     cart = CartResult(
         success=True,
@@ -49,12 +17,12 @@ def test_validate_cart_price_ceiling(mock_config: Config):
         delivery_address="Home - 400001",
         total_payable=270.0,
     )
-    valid, reason = validate_cart(cart, mock_config, s)
+    valid, reason = validate_cart(cart, mock_config, target, s)
     assert valid is False
     assert "exceeds max_price_inr" in reason
 
 
-def test_validate_cart_total_order_ceiling(mock_config: Config):
+def test_validate_cart_total_order_ceiling(mock_config: Config, target):
     s = dict(state.DEFAULTS)
     cart = CartResult(
         success=True,
@@ -64,12 +32,12 @@ def test_validate_cart_total_order_ceiling(mock_config: Config):
         delivery_address="Home - 400001",
         total_payable=350.0,  # exceeds 300
     )
-    valid, reason = validate_cart(cart, mock_config, s)
+    valid, reason = validate_cart(cart, mock_config, target, s)
     assert valid is False
     assert "exceeds max_order_value_inr" in reason
 
 
-def test_validate_cart_extra_items_rejected(mock_config: Config):
+def test_validate_cart_extra_items_rejected(mock_config: Config, target):
     s = dict(state.DEFAULTS)
     cart = CartResult(
         success=True,
@@ -80,12 +48,12 @@ def test_validate_cart_extra_items_rejected(mock_config: Config):
         total_payable=200.0,
         has_extra_items=True,  # Foreign items in cart!
     )
-    valid, reason = validate_cart(cart, mock_config, s)
+    valid, reason = validate_cart(cart, mock_config, target, s)
     assert valid is False
     assert "unexpected items" in reason
 
 
-def test_validate_cart_address_mismatch(mock_config: Config):
+def test_validate_cart_address_mismatch(mock_config: Config, target):
     s = dict(state.DEFAULTS)
     cart = CartResult(
         success=True,
@@ -95,12 +63,12 @@ def test_validate_cart_address_mismatch(mock_config: Config):
         delivery_address="Office - 560001",
         total_payable=200.0,
     )
-    valid, reason = validate_cart(cart, mock_config, s)
+    valid, reason = validate_cart(cart, mock_config, target, s)
     assert valid is False
     assert "Cart address" in reason
 
 
-def test_checkout_dry_run_never_pays(tmp_path: Path, mock_config: Config):
+def test_checkout_dry_run_never_pays(tmp_path: Path, mock_config: Config, target):
     state_file = tmp_path / "state.json"
     s = state.load(state_file)
 
@@ -118,19 +86,19 @@ def test_checkout_dry_run_never_pays(tmp_path: Path, mock_config: Config):
     mock_wallet.inner_text.return_value = "₹500.00"
     mock_page.query_selector.return_value = mock_wallet
 
-    res = checkout(mock_page, mock_config, cart, s, dry_run=True, state_path=str(state_file))
+    res = checkout(mock_page, mock_config, target, cart, s, dry_run=True, state_path=str(state_file))
     assert res.success is True
     assert res.dry_run is True
 
     # Lock must NOT have been written
     s_loaded = state.load(state_file)
-    assert s_loaded["payment_attempt_started"] is False
-    assert s_loaded["order_placed"] is False
+    assert s_loaded["payment_attempt_started"] is None
+    assert s_loaded["orders"] == {}
     # Pay button must not have been clicked
     assert mock_page.click.call_count == 1  # Only clicked checkout button
 
 
-def test_checkout_lock_written_before_pay(tmp_path: Path, mock_config: Config):
+def test_checkout_lock_written_before_pay(tmp_path: Path, mock_config: Config, target):
     state_file = tmp_path / "state.json"
     s = state.load(state_file)
 
@@ -169,17 +137,18 @@ def test_checkout_lock_written_before_pay(tmp_path: Path, mock_config: Config):
 
     mock_page.click.side_effect = mock_click
 
-    res = checkout(mock_page, mock_config, cart, s, dry_run=False, state_path=str(state_file))
+    res = checkout(mock_page, mock_config, target, cart, s, dry_run=False, state_path=str(state_file))
     assert res.success is True
     assert res.order_id == "ORD-TEST-999"
 
-    # Crucial assertion: lock was True on disk when pay was clicked!
-    assert observed_lock_during_pay == [True]
+    # Crucial assertion: the lock named THIS product on disk at the pay click.
+    assert observed_lock_during_pay == [target.id]
 
-    # After completion: order_placed is True
+    # After completion the target is recorded as bought
     final_s = state.load(state_file)
-    assert final_s["order_placed"] is True
-    assert final_s["order_id"] == "ORD-TEST-999"
+    assert target.id in final_s["orders"]
+    assert final_s["orders"][target.id]["order_id"] == "ORD-TEST-999"
+    assert final_s["payment_attempt_started"] is None
 
 
 def _good_cart() -> CartResult:
@@ -193,7 +162,7 @@ def _good_cart() -> CartResult:
     )
 
 
-def test_missing_pay_button_does_not_write_the_lock(tmp_path: Path, mock_config: Config):
+def test_missing_pay_button_does_not_write_the_lock(tmp_path: Path, mock_config: Config, target):
     """Regression: the lock was written before the pay_button selector was checked,
     so a config mistake left the bot in the uncertain state and it refused to start."""
     import dataclasses
@@ -208,22 +177,22 @@ def test_missing_pay_button_does_not_write_the_lock(tmp_path: Path, mock_config:
     page = MagicMock()
     page.query_selector.return_value = None  # no wallet balance element -> method still selected
 
-    res = checkout(page, cfg, _good_cart(), s, dry_run=False, state_path=str(state_file))
+    res = checkout(page, cfg, target, _good_cart(), s, dry_run=False, state_path=str(state_file))
 
     assert res.success is False
     assert "pay_button" in res.error
     page.click.assert_called_once()  # only the checkout button, never pay
     on_disk = state.load(state_file)
-    assert on_disk["payment_attempt_started"] is False
-    assert state.can_order(on_disk, 1)[0] is True
+    assert on_disk["payment_attempt_started"] is None
+    assert state.can_order(on_disk, target.id, 1)[0] is True
 
 
-def test_uncertain_state_blocks_a_second_checkout(tmp_path: Path, mock_config: Config):
+def test_uncertain_state_blocks_a_second_checkout(tmp_path: Path, mock_config: Config, target):
     """After a payment whose outcome is unknown, no retry may happen without a human."""
-    s = dict(state.DEFAULTS, payment_attempt_started=True, order_placed=False)
+    s = dict(state.DEFAULTS, payment_attempt_started="999", orders={})
     page = MagicMock()
 
-    res = checkout(page, mock_config, _good_cart(), s, dry_run=False,
+    res = checkout(page, mock_config, target, _good_cart(), s, dry_run=False,
                    state_path=str(tmp_path / "state.json"))
 
     assert res.success is False

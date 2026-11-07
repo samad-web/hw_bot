@@ -65,7 +65,7 @@ def run_login_flow(cfg: Config, profile_dir: Path = DEFAULT_PROFILE_DIR) -> int:
             ),
         )
         page = context.new_page()
-        target_url = cfg.product.url or "https://blinkit.com"
+        target_url = (cfg.products[0].url if cfg.products else "") or "https://blinkit.com"
         try:
             page.goto(target_url)
         except Exception as e:
@@ -84,7 +84,7 @@ def run_login_flow(cfg: Config, profile_dir: Path = DEFAULT_PROFILE_DIR) -> int:
 
 def run_capture_flow(cfg: Config, profile_dir: Path = DEFAULT_PROFILE_DIR) -> int:
     """Load product page headless, dump HTML and screenshot to logs/capture/, and exit."""
-    logger.info("Running capture flow for %s...", cfg.product.url)
+    saved: list[str] = []
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
@@ -92,19 +92,83 @@ def run_capture_flow(cfg: Config, profile_dir: Path = DEFAULT_PROFILE_DIR) -> in
             viewport={"width": 412, "height": 915},
         )
         page = context.new_page()
-        target_url = cfg.product.url or "https://blinkit.com"
-        page.goto(target_url, wait_until="domcontentloaded")
-        page.wait_for_timeout(3000)
-
-        cap_dir = hardening.save_failure_capture(page, "manual_capture")
+        # Capture every target, so selectors can be compared across pages.
+        for product in cfg.products:
+            url = product.url or "https://blinkit.com"
+            logger.info("Capturing %s (%s)...", product.id or "home", url)
+            try:
+                page.goto(url, wait_until="domcontentloaded")
+                page.wait_for_timeout(4000)  # let the location bar and CTA hydrate
+            except Exception as exc:
+                logger.warning("Capture navigation failed for %s: %s", url, exc)
+            cap_dir = hardening.save_failure_capture(page, f"capture_{product.id or 'home'}")
+            if cap_dir:
+                saved.append(str(cap_dir))
         context.close()
 
-    if cap_dir:
-        print(f"✅ HTML and screenshot captured to: {cap_dir}")
+    if saved:
+        print("Captured:")
+        for s in saved:
+            print(f"  {s}")
         return 0
-    else:
-        print("❌ Failed to save capture.")
-        return 1
+    print("Failed to save any capture.")
+    return 1
+
+
+MODE_A_MUTE_SECONDS = 600
+
+
+def handle_restock(page: Any, cfg: Config, product: Any, bot_state: dict[str, Any],
+                   args: argparse.Namespace, state_path: str) -> tuple[dict[str, Any], bool]:
+    """Act on a detected restock of one product. Returns (state, bought).
+
+    The restock alert always goes out before any cart action, so a failure
+    further down still leaves you able to buy it by hand.
+    """
+    now = time.time()
+
+    if cfg.mode == "A":
+        alerts = dict(bot_state.get("last_alert_ts") or {})
+        if now - alerts.get(product.id, 0) <= MODE_A_MUTE_SECONDS:
+            return bot_state, False
+        alerts[product.id] = int(now)
+        bot_state = state.save(bot_state, state_path, last_alert_ts=alerts)
+        notifier.send(f"RESTOCK: {product.name} is IN STOCK.\n{product.url}", cfg, priority=True)
+        return bot_state, False
+
+    notifier.send(f"RESTOCK: {product.name} is IN STOCK. Adding to cart...", cfg, priority=True)
+    cart = executor.add_to_cart(page, cfg, product)
+
+    if cfg.mode == "B":
+        if cart.success:
+            notifier.send(
+                f"Cart ready: {cart.item_name}\nTotal Rs {cart.total_payable}\n"
+                f"Address: {cart.delivery_address}\nOpen Blinkit and tap PAY now.",
+                cfg, priority=True)
+        else:
+            notifier.send(f"Could not cart {product.name}: {cart.error}", cfg, priority=True)
+        return bot_state, False
+
+    # Mode C
+    chk = executor.checkout(page, cfg, product, cart, bot_state,
+                            dry_run=args.dry_run, state_path=state_path)
+    # checkout() writes the lock itself, so re-read: a stale in-memory copy would
+    # let the next cycle retry a payment whose outcome is unknown.
+    bot_state = state.load(state_path)
+
+    if chk.success and chk.dry_run:
+        notifier.send(
+            f"[DRY RUN] Would have paid for {product.name} via {chk.payment_method}.", cfg)
+        return bot_state, False
+    if chk.success:
+        notifier.send(
+            f"ORDER PLACED: {product.name}\nOrder ID: {chk.order_id}\n"
+            f"Paid via {chk.payment_method}\n"
+            f"Total spent so far: Rs {bot_state.get('total_spent', 0):.0f}",
+            cfg, priority=True)
+        return bot_state, True
+    notifier.send(f"Checkout FAILED for {product.name}: {chk.error}", cfg, priority=True)
+    return bot_state, False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -143,20 +207,24 @@ def main(argv: list[str] | None = None) -> int:
         notifier.send(f"⚠️ {msg}", cfg, priority=True)
         return 1
 
-    if bot_state.get("order_placed") and cfg.safety.stop_after_success:
-        logger.info("Single-order lock active: order already placed (%s). Exiting.", bot_state.get("order_id"))
+    if state.all_bought(bot_state, len(cfg.products)) and cfg.safety.stop_after_success:
+        logger.info("All %d targets already ordered. Nothing to do.", len(cfg.products))
         return 0
 
     # Startup greeting & self-test
     mode_desc = f"Mode {cfg.mode}" + (" (DRY RUN)" if args.dry_run else "")
+    remaining = [q for q in cfg.products if not state.is_bought(bot_state, q.id)]
+    target_lines = "\n".join(f"   - {q.name} (max Rs {q.max_price_inr:.0f})" for q in remaining)
     greeting = (
-        f"🤖 *Blinkit Hot Wheels Bot Started*\n"
-        f"• Target: {cfg.product.name or 'Configured Item'}\n"
-        f"• Delivery: {cfg.delivery.label} ({cfg.delivery.pincode})\n"
-        f"• Operating Mode: {mode_desc}\n"
-        f"• Polling Interval: ~{cfg.polling.interval_seconds}s"
+        f"Blinkit Hot Wheels Bot started\n"
+        f"- Watching {len(remaining)} of {len(cfg.products)} target(s):\n{target_lines}\n"
+        f"- Delivery: {cfg.delivery.label} ({cfg.delivery.pincode})\n"
+        f"- {mode_desc}, cycle ~{cfg.polling.interval_seconds}s"
     )
-    logger.info("Bot started in %s. Polling target every ~%ds.", mode_desc, cfg.polling.interval_seconds)
+    if cfg.safety.max_total_spend_inr:
+        greeting += (f"\n- Spend cap Rs {cfg.safety.max_total_spend_inr:.0f}"
+                     f" (spent so far Rs {bot_state.get('total_spent', 0):.0f})")
+    logger.info("Bot started in %s watching %d target(s).", mode_desc, len(remaining))
     notifier.send(greeting, cfg)
 
     # Graceful shutdown handler
@@ -197,23 +265,23 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             while running:
-                # 1. Inbound Telegram command polling
+                # 1. Inbound Telegram commands. Polled between cycles only, so a
+                # command can never interleave with a checkout.
                 bot_state, stop_requested = notifier.poll_commands(cfg, bot_state, state_path)
                 if stop_requested:
                     logger.info("Stop requested via Telegram command.")
                     break
 
-                # 2. Check if paused
                 if bot_state.get("paused"):
-                    logger.debug("Bot is paused. Sleeping...")
                     time.sleep(10)
                     continue
 
-                # 2b. Recycle the browser context periodically to bound memory, but
-                # never while the item is in stock or a checkout may be in flight.
+                # 2. Recycle the browser context periodically to bound memory, but
+                # never while something is in stock or a checkout may be in flight.
                 if (time.time() - last_recycle_ts >= cfg.reliability.recycle_hours * 3600
                         and bot_state.get("last_status") != "IN_STOCK"):
-                    logger.info("Recycling browser context after %.1fh.", cfg.reliability.recycle_hours)
+                    logger.info("Recycling browser context after %.1fh.",
+                                cfg.reliability.recycle_hours)
                     try:
                         browser_context.close()
                     except Exception as exc:
@@ -221,141 +289,82 @@ def main(argv: list[str] | None = None) -> int:
                     browser_context, page = launch(p)
                     last_recycle_ts = time.time()
 
-                # 3. Heartbeat check
+                # 3. Heartbeat
                 now = time.time()
                 if now - last_heartbeat_ts >= cfg.reliability.heartbeat_hours * 3600:
                     last_heartbeat_ts = now
+                    pending = [q for q in cfg.products if not state.is_bought(bot_state, q.id)]
                     notifier.send(
-                        f"💓 Heartbeat: Bot is actively watching {cfg.product.name}. "
-                        f"Status: {bot_state.get('last_status', 'OK')}",
+                        f"Heartbeat: watching {len(pending)} target(s), last check "
+                        f"{bot_state.get('last_status', 'n/a')}. Bought "
+                        f"{len(bot_state.get('orders') or {})}/{len(cfg.products)}.",
                         cfg,
                     )
 
-                # 4. Availability check. The page MUST be re-fetched every iteration:
-                # a product page does not flip to "Add" on its own, so re-reading a
-                # stale DOM would mean never seeing the restock.
-                target_url = cfg.product.url
-                try:
-                    if target_url:
-                        page.goto(target_url, timeout=30000, wait_until="domcontentloaded")
-                    else:
-                        page.reload(timeout=30000, wait_until="domcontentloaded")
-                except Exception as exc:
-                    logger.warning("Page navigation failed: %s", exc)
+                # 4. One pass over every target still outstanding.
+                targets = [q for q in cfg.products if not state.is_bought(bot_state, q.id)]
+                if not targets:
+                    notifier.send(
+                        f"All {len(cfg.products)} targets ordered. Total spent Rs "
+                        f"{bot_state.get('total_spent', 0):.0f}. Shutting down.",
+                        cfg, priority=True,
+                    )
+                    logger.info("Every target has been ordered. Exiting.")
+                    break
 
-                res = checker.check(page, cfg)
-                bot_state = state.save(
-                    bot_state, state_path,
-                    last_status=res.kind.value,
-                    last_check_ts=int(now),
-                )
-                hardening.ping_healthcheck(cfg.healthcheck_url)
+                # Spread requests evenly across the cycle so no two page loads land
+                # closer together than the politeness floor.
+                gap_base = max(1, cfg.polling.interval_seconds // len(targets))
+                gap_jitter = cfg.polling.jitter_seconds // len(targets)
 
-                # A verdict of IN_STOCK or OUT_OF_STOCK is only reachable once the
-                # identity assertion has passed, so it doubles as proof the bot can
-                # still read the page. Shout if that has not happened in an hour.
-                if res.kind in (CheckResultKind.IN_STOCK, CheckResultKind.OUT_OF_STOCK):
-                    bot_state = state.save(bot_state, state_path, last_identity_ok_ts=int(now))
-                else:
-                    ref_ts = bot_state.get("last_identity_ok_ts") or start_ts
-                    if hardening.is_possibly_blind(ref_ts, now) and now - last_blind_alert_ts > 3600:
-                        last_blind_alert_ts = now
-                        notifier.send(
-                            "Possibly blind: the product-identity check has not passed for over "
-                            "an hour. Selectors may have drifted - check logs/capture/.",
-                            cfg,
-                            priority=True,
-                        )
+                for product in targets:
+                    if not running:
+                        break
+                    now = time.time()
+                    try:
+                        page.goto(product.url, timeout=30000, wait_until="domcontentloaded")
+                    except Exception as exc:
+                        logger.warning("Navigation to product %s failed: %s", product.id, exc)
 
-                if res.kind == CheckResultKind.IN_STOCK:
-                    bot_state = state.save(bot_state, state_path, consecutive_errors=0)
-                    logger.info("RESTOCK DETECTED! %s", res.message)
+                    res = checker.check(page, cfg, product)
+                    bot_state = state.save(bot_state, state_path,
+                                           last_status=res.kind.value, last_check_ts=int(now))
+                    hardening.ping_healthcheck(cfg.healthcheck_url)
+                    logger.info("[%s] %s %s", product.id, res.kind.value, res.message)
 
-                    # Mode A: Notify only
-                    if cfg.mode == "A":
-                        # Mute window lives in state so a restart cannot re-spam.
-                        if now - bot_state.get("last_alert_ts", 0) > 600:
-                            bot_state = state.save(bot_state, state_path, last_alert_ts=int(now))
+                    if res.kind == CheckResultKind.ERROR:
+                        cons = bot_state.get("consecutive_errors", 0) + 1
+                        bot_state = state.save(bot_state, state_path, consecutive_errors=cons)
+                        if res.error_kind in ("unknown_layout", "login", "blocked"):
+                            hardening.save_failure_capture(page, f"{product.id}_{res.error_kind}")
+                        if cons == 1 or res.error_kind in ("login", "blocked"):
                             notifier.send(
-                                f"🚨 *RESTOCK ALERT!*\n"
-                                f"*{cfg.product.name}* is IN STOCK!\n"
-                                f"Order now: {cfg.product.url}",
-                                cfg,
-                                priority=True,
-                            )
-
-                    # Mode B: Cart + confirm
-                    elif cfg.mode == "B":
-                        notifier.send(f"🚨 *RESTOCK ALERT!* Adding to cart...", cfg, priority=True)
-                        cart_res = executor.add_to_cart(page, cfg)
-                        if cart_res.success:
+                                f"Bot warning on {product.name} ({res.error_kind}): {res.message}",
+                                cfg)
+                        ref_ts = bot_state.get("last_identity_ok_ts") or start_ts
+                        if (hardening.is_possibly_blind(ref_ts, now)
+                                and now - last_blind_alert_ts > 3600):
+                            last_blind_alert_ts = now
                             notifier.send(
-                                f"🛒 *Item added to cart!*\n"
-                                f"• Item: {cart_res.item_name}\n"
-                                f"• Total: ₹{cart_res.total_payable}\n"
-                                f"• Address: {cart_res.delivery_address}\n"
-                                f"👉 Open Blinkit and tap PAY to complete order!",
-                                cfg,
-                                priority=True,
-                            )
-                        else:
-                            notifier.send(f"⚠️ Cart addition failed: {cart_res.error}", cfg)
+                                "Possibly blind: the product-identity check has not passed for "
+                                "over an hour. Selectors may have drifted - check logs/capture/.",
+                                cfg, priority=True)
+                        time.sleep(hardening.next_delay(cons))
+                        continue
 
-                    # Mode C: Full auto-order
-                    elif cfg.mode == "C":
-                        notifier.send(f"🚨 *RESTOCK ALERT!* Starting automated checkout...", cfg, priority=True)
-                        cart_res = executor.add_to_cart(page, cfg)
-                        chk_res = executor.checkout(
-                            page, cfg, cart_res, bot_state,
-                            dry_run=args.dry_run,
-                            state_path=state_path,
-                        )
-                        # checkout() writes the lock itself, so re-read from disk:
-                        # a stale in-memory copy would let the next iteration retry
-                        # a payment whose outcome is unknown.
-                        bot_state = state.load(state_path)
-                        if chk_res.success:
-                            if chk_res.dry_run:
-                                notifier.send(
-                                    f"✅ [DRY RUN] Order simulated successfully! Method: {chk_res.payment_method}",
-                                    cfg,
-                                )
-                            else:
-                                notifier.send(
-                                    f"🎉 *ORDER PLACED!* Order ID: {chk_res.order_id}\nPayment: {chk_res.payment_method}",
-                                    cfg,
-                                    priority=True,
-                                )
-                                if cfg.safety.stop_after_success:
-                                    logger.info("Order placed and stop_after_success is True. Exiting.")
-                                    break
-                        else:
-                            notifier.send(f"❌ Checkout failed: {chk_res.error}", cfg, priority=True)
+                    # IN_STOCK or OUT_OF_STOCK is only reachable once the identity
+                    # assertion passed, so it doubles as proof we can read the page.
+                    bot_state = state.save(bot_state, state_path,
+                                           last_identity_ok_ts=int(now), consecutive_errors=0)
 
-                elif res.kind == CheckResultKind.OUT_OF_STOCK:
-                    bot_state = state.save(bot_state, state_path, consecutive_errors=0)
-                    logger.debug("Product out of stock. Watching...")
+                    if res.kind == CheckResultKind.IN_STOCK:
+                        bot_state, bought = handle_restock(
+                            page, cfg, product, bot_state, args, state_path)
+                        if bought:
+                            # Start a fresh cycle so two checkouts can never overlap.
+                            break
 
-                elif res.kind == CheckResultKind.ERROR:
-                    cons_errors = bot_state.get("consecutive_errors", 0) + 1
-                    bot_state = state.save(bot_state, state_path, consecutive_errors=cons_errors)
-                    logger.warning("Check returned error (%s): %s", res.error_kind, res.message)
-
-                    # Capture layout on unknown layout or block
-                    if res.error_kind in ("unknown_layout", "login", "blocked"):
-                        hardening.save_failure_capture(page, res.error_kind or "error")
-
-                    if cons_errors == 1 or res.error_kind in ("login", "blocked"):
-                        notifier.send(f"⚠️ Bot warning ({res.error_kind}): {res.message}", cfg)
-
-                    delay = hardening.next_delay(cons_errors)
-                    logger.info("Backing off for %ds due to errors (%d consecutive)", delay, cons_errors)
-                    time.sleep(delay)
-                    continue
-
-                # Sleep standard jittered interval
-                sleep_sec = hardening.calculate_interval(cfg.polling.interval_seconds, cfg.polling.jitter_seconds)
-                time.sleep(sleep_sec)
+                    time.sleep(hardening.calculate_interval(gap_base, gap_jitter))
 
         finally:
             logger.info("Closing browser context...")

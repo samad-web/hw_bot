@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
-from config import Config
+from config import Config, ProductConfig
 
 logger = logging.getLogger("hw_bot")
 
@@ -36,8 +36,8 @@ class CheckResult:
     header_address: str = ""
 
 
-def check(page: Any, cfg: Config) -> CheckResult:
-    """Evaluate product availability on the currently loaded page or navigate to it."""
+def check(page: Any, cfg: Config, product: ProductConfig) -> CheckResult:
+    """Evaluate availability of ``product`` on the currently loaded page."""
     # 1. Selector validation
     selectors = cfg.selectors
     if not selectors.product_title:
@@ -131,7 +131,7 @@ def check(page: Any, cfg: Config) -> CheckResult:
                 header_address=addr_text,
             )
         actual_title = (title_el.inner_text() or "").strip()
-        expected_name = cfg.product.name.strip().lower()
+        expected_name = product.name.strip().lower()
 
         # If a name is configured (not empty or template placeholder)
         if expected_name and not expected_name.startswith("hot wheels <"):
@@ -142,7 +142,7 @@ def check(page: Any, cfg: Config) -> CheckResult:
                     error_kind="wrong_product",
                     message=(
                         f"Product title mismatch: page shows '{actual_title}', "
-                        f"expected '{cfg.product.name}'"
+                        f"expected '{product.name}'"
                     ),
                     product_title=actual_title,
                     header_address=addr_text,

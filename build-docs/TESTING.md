@@ -77,3 +77,29 @@ Defects found and fixed, each with a regression test:
 
 Not fixed, tracked as gaps: order-history check before retry (F6 AC6/7) and the
 card OTP relay (spec req 13). Both need real Blinkit HTML that does not exist yet.
+
+### 2026-11-07 — F8 multi-product
+
+59 tests pass. Suite grew 49 → 59: a shared `tests/conftest.py` now builds Config
+in one place, and `tests/test_multi_product.py` covers the F8 acceptance criteria.
+
+| F8 AC | Test |
+|---|---|
+| 1 — only the restocked target is ordered, others keep being watched | `test_ac1_cycle_visits_every_outstanding_target`, `test_ac1_a_bought_target_is_dropped_from_the_watch_list` |
+| 2 — exits once every target is bought, restart does not re-order | `test_ac2_bot_exits_once_every_target_is_bought` |
+| 3 — per-product lock survives a crash | `test_record_order_marks_bought_and_clears_the_in_flight_flag`, `test_legacy_state_with_an_order_is_flagged_not_guessed` |
+| 4 — in-flight payment blocks EVERY target | `test_ac4_in_flight_payment_blocks_every_target`, `test_can_order_rules` |
+| 5 — spend cap blocks the crossing order before any lock write | `test_spend_cap_blocks_the_order_that_would_cross_it` |
+| 6 — cycle interval scales with target count | `test_polling_floor_scales_with_target_count` |
+| 7 — duplicate prid rejected | `test_duplicate_product_id_rejected` |
+| 8 — max_orders_total must equal product count | `test_max_orders_total_must_equal_product_count` |
+
+Also verified: Mode A's mute window is per product and persisted
+(`test_mode_a_mute_is_per_product_and_survives_restart`).
+
+**Live smoke run** (real Chromium, real Blinkit, Mode A, dry-run): the bot
+started, fetched the K5 Blazer page, and the checker read the location bar as
+"Delivery in 12 minutes", correctly returning `location_drift` rather than
+guessing at stock. Confirms `product_title`, `header_address` and the hydration
+wait work against the live site. The address subtitle is empty until a session
+with a saved address exists, which is the expected pre-login state.

@@ -27,7 +27,7 @@ def test_parse_args_overrides():
 def test_main_exits_if_uncertain_state(tmp_path: Path):
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(
-        "product: {name: 'Test', max_price_inr: 100}\n"
+        "products: [{id: '1', name: 'Test', max_price_inr: 100}]\n"
         "delivery: {label: 'Home'}\n"
         "mode: 'A'\n"
         "polling: {interval_seconds: 30}\n"
@@ -39,7 +39,7 @@ def test_main_exits_if_uncertain_state(tmp_path: Path):
     )
     # Uncertain state on disk
     state_file = tmp_path / "state.json"
-    state.save(state.DEFAULTS, state_file, payment_attempt_started=True, order_placed=False)
+    state.save(state.DEFAULTS, state_file, payment_attempt_started="1")
 
     with patch("notifier.send") as mock_send:
         rc = main.main([
@@ -55,7 +55,7 @@ def test_main_exits_if_uncertain_state(tmp_path: Path):
 def _write_mode_a_project(tmp_path: Path) -> Path:
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(
-        "product: {name: 'Hot Wheels GTR', url: 'https://blinkit.com/prn/x/prid/1', max_price_inr: 100}\n"
+        "products: [{id: '1', name: 'Hot Wheels GTR', url: 'https://blinkit.com/prn/x/prid/1', max_price_inr: 100}]\n"
         "delivery: {label: 'Home', pincode: '400001'}\n"
         "mode: 'A'\n"
         "polling: {interval_seconds: 30, jitter_seconds: 0}\n"
@@ -98,7 +98,7 @@ def test_loop_refetches_the_page_every_iteration(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(main.notifier, "poll_commands", lambda cfg, st, sp=None: (st, False))
     monkeypatch.setattr(
         main.checker, "check",
-        lambda p, c: CheckResult(CheckResultKind.OUT_OF_STOCK, product_title="Hot Wheels GTR"),
+        lambda p, c, prod: CheckResult(CheckResultKind.OUT_OF_STOCK, product_title="Hot Wheels GTR"),
     )
 
     with pytest.raises(SystemExit):
@@ -133,7 +133,7 @@ def test_loop_writes_state_to_the_path_given_by_state_flag(tmp_path: Path, monke
     monkeypatch.setattr(main.notifier, "poll_commands", lambda cfg, st, sp=None: (st, False))
     monkeypatch.setattr(
         main.checker, "check",
-        lambda p, c: CheckResult(CheckResultKind.OUT_OF_STOCK, product_title="Hot Wheels GTR"),
+        lambda p, c, prod: CheckResult(CheckResultKind.OUT_OF_STOCK, product_title="Hot Wheels GTR"),
     )
 
     with pytest.raises(SystemExit):

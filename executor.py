@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import state
-from config import Config
+from config import Config, ProductConfig
 
 logger = logging.getLogger("hw_bot")
 
@@ -51,9 +51,13 @@ def _parse_currency(text: str) -> float:
     return 0.0
 
 
-def validate_cart(cart: CartResult, cfg: Config, current_state: dict[str, Any]) -> tuple[bool, str]:
+def validate_cart(cart: CartResult, cfg: Config, product: ProductConfig,
+                  current_state: dict[str, Any]) -> tuple[bool, str]:
     """Perform pre-checkout safety checks. Every rule must pass or checkout aborts."""
-    can_ord, reason = state.can_order(current_state, cfg.safety.max_orders_total)
+    can_ord, reason = state.can_order(
+        current_state, product.id, cfg.safety.max_orders_total,
+        cfg.safety.max_total_spend_inr, cart.total_payable,
+    )
     if not can_ord:
         return False, f"Ordering not permitted: {reason}"
 
@@ -66,13 +70,13 @@ def validate_cart(cart: CartResult, cfg: Config, current_state: dict[str, Any]) 
     if cart.has_extra_items:
         return False, "Cart contains unexpected items. Refusing to checkout foreign items."
 
-    if cart.quantity != cfg.product.quantity:
-        return False, f"Cart quantity ({cart.quantity}) does not match expected ({cfg.product.quantity})"
+    if cart.quantity != product.quantity:
+        return False, f"Cart quantity ({cart.quantity}) does not match expected ({product.quantity})"
 
     # Price ceilings
-    if cfg.product.max_price_inr > 0 and cart.unit_price > cfg.product.max_price_inr:
+    if product.max_price_inr > 0 and cart.unit_price > product.max_price_inr:
         return False, (
-            f"Unit price (₹{cart.unit_price}) exceeds max_price_inr ceiling (₹{cfg.product.max_price_inr})"
+            f"Unit price (Rs {cart.unit_price}) exceeds max_price_inr ceiling (Rs {product.max_price_inr}) for {product.id}"
         )
 
     if cfg.payment.max_order_value_inr > 0 and cart.total_payable > cfg.payment.max_order_value_inr:
@@ -81,11 +85,11 @@ def validate_cart(cart: CartResult, cfg: Config, current_state: dict[str, Any]) 
         )
 
     # Product name match
-    expected_name = cfg.product.name.strip().lower()
+    expected_name = product.name.strip().lower()
     if expected_name and not expected_name.startswith("hot wheels <"):
         actual_name = cart.item_name.strip().lower()
         if expected_name not in actual_name and actual_name not in expected_name:
-            return False, f"Cart item '{cart.item_name}' does not match configured '{cfg.product.name}'"
+            return False, f"Cart item '{cart.item_name}' does not match configured '{product.name}'"
 
     # Delivery address match
     expected_label = cfg.delivery.label.strip().lower()
@@ -107,8 +111,8 @@ def validate_cart(cart: CartResult, cfg: Config, current_state: dict[str, Any]) 
     return True, ""
 
 
-def add_to_cart(page: Any, cfg: Config) -> CartResult:
-    """Add the target product to cart and read back values (Mode B and pre-Mode C)."""
+def add_to_cart(page: Any, cfg: Config, product: ProductConfig) -> CartResult:
+    """Add ``product`` to the cart and read back the values Mode C will validate."""
     selectors = cfg.selectors
     if not selectors.add_button:
         return CartResult(success=False, error="Selector 'add_button' is not configured")
@@ -177,7 +181,7 @@ def add_to_cart(page: Any, cfg: Config) -> CartResult:
 
         return CartResult(
             success=True,
-            item_name=item_name or cfg.product.name,
+            item_name=item_name or product.name,
             unit_price=unit_price,
             quantity=quantity,
             delivery_address=cart_address,
@@ -192,6 +196,7 @@ def add_to_cart(page: Any, cfg: Config) -> CartResult:
 def checkout(
     page: Any,
     cfg: Config,
+    product: ProductConfig,
     cart: CartResult,
     current_state: dict[str, Any],
     dry_run: bool = False,
@@ -199,7 +204,7 @@ def checkout(
 ) -> CheckoutResult:
     """Execute pre-checkout validation, method selection, lock write, and payment."""
     # 1. Pre-checkout validation
-    is_valid, reason = validate_cart(cart, cfg, current_state)
+    is_valid, reason = validate_cart(cart, cfg, product, current_state)
     if not is_valid:
         logger.error("Pre-checkout validation failed: %s", reason)
         return CheckoutResult(success=False, error=reason)
@@ -275,8 +280,8 @@ def checkout(
         )
 
     # 4. SINGLE-ORDER LOCK SEQUENCE: Atomic write and fsync BEFORE pay click
-    current_state = state.save(current_state, state_path, payment_attempt_started=True)
-    logger.info("Payment attempt started lock written and fsynced. Proceeding to pay click.")
+    current_state = state.save(current_state, state_path, payment_attempt_started=product.id)
+    logger.info("Lock written and fsynced for product %s. Proceeding to pay click.", product.id)
 
     try:
         # Click pay
@@ -291,16 +296,12 @@ def checkout(
                 if el:
                     order_id = (el.inner_text() or "").strip()
 
-        # Mark order placed atomically
-        current_state = state.save(
-            current_state,
-            state_path,
-            order_placed=True,
-            order_id=order_id or f"ORD-{int(time.time())}",
-        )
+        # Mark this target bought and clear the in-flight flag, atomically.
+        order_id = order_id or f"ORD-{int(time.time())}"
+        state.record_order(current_state, product.id, order_id, cart.total_payable, state_path)
         return CheckoutResult(
             success=True,
-            order_id=current_state["order_id"],
+            order_id=order_id,
             payment_method=selected_method,
         )
 

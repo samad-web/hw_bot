@@ -6,13 +6,15 @@ from config import load_config, ConfigError, MIN_POLLING_INTERVAL_SECONDS
 
 def create_minimal_config(path: Path, **overrides) -> Path:
     base = {
-        "product": {
-            "name": "Hot Wheels Nissan Skyline GT-R",
-            "url": "https://blinkit.com/prn/hot-wheels-gtr/prid/12345",
-            "search_keywords": ["hot wheels", "skyline"],
-            "max_price_inr": 200.0,
-            "quantity": 1,
-        },
+        "products": [
+            {
+                "id": "12345",
+                "name": "Hot Wheels Nissan Skyline GT-R",
+                "url": "https://blinkit.com/prn/hot-wheels-gtr/prid/12345",
+                "max_price_inr": 200.0,
+                "quantity": 1,
+            }
+        ],
         "delivery": {
             "label": "Home",
             "lat": 19.0760,
@@ -32,6 +34,7 @@ def create_minimal_config(path: Path, **overrides) -> Path:
         "safety": {
             "max_orders_total": 1,
             "stop_after_success": True,
+            "max_total_spend_inr": 800.0,
         },
         "reliability": {
             "recycle_hours": 6,
@@ -56,7 +59,7 @@ def create_minimal_config(path: Path, **overrides) -> Path:
 def test_load_valid_config(tmp_path: Path):
     cfg_file = create_minimal_config(tmp_path / "config.yaml")
     cfg = load_config(cfg_file, env_path=tmp_path / ".env")
-    assert cfg.product.name == "Hot Wheels Nissan Skyline GT-R"
+    assert cfg.products[0].name == "Hot Wheels Nissan Skyline GT-R"
     assert cfg.mode == "A"
     assert cfg.polling.interval_seconds == 45
     assert cfg.safety.max_orders_total == 1
@@ -91,20 +94,50 @@ def test_mode_c_requires_positive_spend_ceilings(tmp_path: Path):
     cfg_file2 = create_minimal_config(
         tmp_path / "config.yaml",
         mode="C",
-        product={"max_price_inr": 0},
+        products=[{"id": "1", "name": "Hot Wheels Nissan Skyline GT-R",
+                    "url": "https://blinkit.com/prn/x/prid/1", "max_price_inr": 0}],
         payment={"max_order_value_inr": 500},
     )
     with pytest.raises(ConfigError, match="max_price_inr > 0"):
         load_config(cfg_file2, env_path=tmp_path / ".env")
 
 
-def test_max_orders_total_must_be_one(tmp_path: Path):
+def test_max_orders_total_must_equal_product_count(tmp_path: Path):
+    """Each target is bought at most once, so the two numbers cannot disagree."""
     cfg_file = create_minimal_config(
         tmp_path / "config.yaml",
-        safety={"max_orders_total": 2},
+        safety={"max_orders_total": 2, "max_total_spend_inr": 800.0},
     )
-    with pytest.raises(ConfigError, match="only 1 is supported"):
+    with pytest.raises(ConfigError, match="must equal the number of products"):
         load_config(cfg_file, env_path=tmp_path / ".env")
+
+
+def test_duplicate_product_id_rejected(tmp_path: Path):
+    dup = {"id": "1", "name": "Hot Wheels A", "url": "https://blinkit.com/prn/x/prid/1",
+           "max_price_inr": 100.0}
+    cfg_file = create_minimal_config(
+        tmp_path / "config.yaml",
+        products=[dict(dup), dict(dup)],
+        safety={"max_orders_total": 2, "max_total_spend_inr": 800.0},
+    )
+    with pytest.raises(ConfigError, match="duplicate product id"):
+        load_config(cfg_file, env_path=tmp_path / ".env")
+
+
+def test_polling_floor_scales_with_target_count(tmp_path: Path):
+    """One cycle fetches a page per target, so the 20s floor is per request."""
+    cfg_file = create_minimal_config(
+        tmp_path / "config.yaml",
+        products=[
+            {"id": "1", "name": "A", "url": "https://blinkit.com/prn/x/prid/1", "max_price_inr": 100.0},
+            {"id": "2", "name": "B", "url": "https://blinkit.com/prn/x/prid/2", "max_price_inr": 100.0},
+            {"id": "3", "name": "C", "url": "https://blinkit.com/prn/x/prid/3", "max_price_inr": 100.0},
+        ],
+        safety={"max_orders_total": 3, "max_total_spend_inr": 800.0},
+        polling={"interval_seconds": 30, "jitter_seconds": 5},
+    )
+    cfg = load_config(cfg_file, env_path=tmp_path / ".env")
+    assert cfg.polling.interval_seconds == 60  # 20s x 3 targets
 
 
 def test_env_overlay_reads_telegram_and_evolution(tmp_path: Path):
@@ -143,12 +176,13 @@ def test_mode_b_rejects_placeholder_product_name(tmp_path: Path):
     cfg_file = create_minimal_config(
         tmp_path / "config.yaml",
         mode="B",
-        product={
+        products=[{
+            "id": "1",
             "name": "Hot Wheels <exact model name>",
             "url": "https://blinkit.com/prn/x/prid/1",
             "max_price_inr": 200.0,
             "quantity": 1,
-        },
+        }],
     )
     with pytest.raises(ConfigError, match="placeholder"):
         load_config(cfg_file, env_path=tmp_path / ".env")

@@ -35,3 +35,18 @@
 - Added an 8 s wait for the location bar to hydrate: Blinkit SSRs it as an empty shimmer, which the checker previously read as `""` and reported as false `location_drift` on every cycle.
 - Remaining selectors cannot be derived anonymously: with no delivery address Blinkit reports every product "Coming soon", so in-stock markup never renders. They need `--capture` from a logged-in session.
 - Tests 47 → 49.
+
+## 2026-11-07 — feat(multi-product): watch several cars, buy each in turn
+- `product:` → `products:` list, keyed by Blinkit prid. Configured with the two confirmed targets: K5 Blazer (prid 799027, cap Rs 659) and 23 Ram 1500 (prid 1416802, cap Rs 215).
+- State holds a per-product `orders` map; `payment_attempt_started` now stores the prid in flight, so a crash names the car whose outcome is unknown.
+- New `safety.max_total_spend_inr` (set to 800, the wallet balance) checked before any lock write.
+- Loop iterates outstanding targets, breaks after a purchase so two checkouts can never overlap, and exits when all are bought.
+- Polling floor scales: 20 s per request × number of targets.
+- `max_orders_total` must equal the product count; duplicate prids rejected.
+- `--capture` now captures every target page.
+- Tests 49 → 59, plus a shared `tests/conftest.py`.
+
+### Still outstanding
+- `add_button` and all cart/checkout selectors: need a capture from a logged-in session with a delivery address.
+- Delivery label and pincode are still placeholders, so modes B and C refuse to start.
+- Order-history check before retry, and the card OTP relay, remain unimplemented.

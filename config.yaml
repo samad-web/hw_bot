@@ -1,57 +1,67 @@
 # Blinkit Hot Wheels bot — non-secret configuration.
 # Secrets live in .env only. See .env.example.
 
-product:
-  name: "Hot Wheels <exact model name>"      # TODO must match the product title on the page
-  url: ""                                     # TODO Blinkit product URL; empty = search by keyword
-  search_keywords: ["hot wheels"]   # unused while out of stock: Blinkit hides coming-soon items from search, so product.url is REQUIRED
-  max_price_inr: 0                            # abort above this. 0 = unset (rejected in mode C)
-  quantity: 1
+# Watch targets, bought one at a time. 'id' is the Blinkit prid from the URL and
+# is the key the single-order lock is stored under. Both titles were verified
+# against the live pages on 2026-11-07.
+products:
+  - id: "799027"
+    name: "Hot Wheels 1985 Chevrolet K5 Blazer Die Cast Car"
+    url: "https://blinkit.com/prn/hot-wheels-1985-chevrolet-k5-blazer-die-cast-car/prid/799027"
+    max_price_inr: 659        # listed Rs 549, +20% tolerance
+    quantity: 1
+  - id: "1416802"
+    name: "Hot Wheels 23 Ram 1500 Die Cast Car"
+    url: "https://blinkit.com/prn/hot-wheels-23-ram-1500-die-cast-car/prid/1416802"
+    max_price_inr: 215        # listed Rs 179, +20% tolerance
+    quantity: 1
 
 delivery:
-  label: "Home"                               # TODO saved address label on the account
+  label: "Home"               # TODO saved address label on the account
   lat: 0.0
   lng: 0.0
-  pincode: "000000"                           # TODO
+  pincode: "000000"           # TODO required before mode B or C will start
 
-mode: "A"                                     # A notify only | B cart + confirm | C full auto-order
+mode: "A"                     # A notify only | B cart + confirm | C full auto-order
 
 polling:
-  interval_seconds: 45
-  jitter_seconds: 15                          # random +/- applied to the interval
+  interval_seconds: 60        # floor is 20s x number of targets = 40s
+  jitter_seconds: 15
 
 payment:
-  priority: ["blinkit_wallet"]                # blinkit_wallet | cod | saved_card_otp_relay
-  max_order_value_inr: 0                      # hard ceiling on total payable incl. fees
+  priority: ["blinkit_wallet"]
+  max_order_value_inr: 700    # ceiling on any ONE order, incl. fees
   otp_relay_timeout_seconds: 120
 
 safety:
-  max_orders_total: 1                         # must be 1; only single-order runs are supported
-  stop_after_success: true
+  max_orders_total: 2         # must equal the number of products
+  stop_after_success: true    # exit once every target is bought
+  # Hard ceiling on the SUM of all orders. Wallet holds Rs 800; both cars at
+  # listed price total Rs 728, leaving ~Rs 72 for two sets of delivery fees.
+  max_total_spend_inr: 800
 
 reliability:
-  recycle_hours: 6                            # relaunch the browser context this often
-  heartbeat_hours: 6                          # "still watching" message interval
+  recycle_hours: 6
+  heartbeat_hours: 6
 
-# All Blinkit CSS selectors live here and nowhere else, so a UI change is a config edit.
-# Every value is a TODO until filled in from real HTML captured with: python main.py --capture
+# All Blinkit CSS selectors live here and nowhere else, so a UI change is a
+# config edit rather than a code change.
 selectors:
-  # Verified 2026-11-07 against live Blinkit product HTML. Each is unique in the
-  # DOM. "tw-" classes are Tailwind utilities (deterministic); styled-components
-  # classes carry a build hash, so they are matched with class*= on the stable
-  # component-name prefix only.
+  # Verified 2026-11-07 against live Blinkit product HTML; each unique in the DOM.
+  # "tw-" classes are Tailwind utilities (deterministic). styled-components
+  # classes carry a per-build hash, so match the stable name prefix with class*=.
   product_title: 'div.tw-line-clamp-50'
   product_id: ""
   header_address: 'div[class*="LocationBar__Container"]'
-  # The sticky bar's status line. Unique page-wide. Blinkit uses TWO unavailable
-  # wordings in this same slot - "Out of stock" (tw-text-grey-700) and "Coming
-  # soon" (tw-text-yellow-700) - so match on text, not colour, and never on a price.
+  # The sticky bar's status line. Blinkit uses TWO unavailable wordings in this
+  # same slot - "Out of stock" (tw-text-grey-700) and "Coming soon"
+  # (tw-text-yellow-700) - so match on text, not colour, and never on a price.
   out_of_stock: 'div.tw-text-200.tw-font-medium:has-text("Out of stock"), div.tw-text-200.tw-font-medium:has-text("Coming soon")'
 
-  # TODO capture these from YOUR logged-in session with a location set.
-  # They cannot be derived anonymously: with no delivery address Blinkit reports
-  # every product as "Coming soon", so the in-stock markup never renders.
-  # Run: python main.py --capture  (on an IN-STOCK product page)
+  # TODO capture from YOUR logged-in session with a delivery address set.
+  # These cannot be derived anonymously: with no address Blinkit reports every
+  # product unavailable, so the in-stock markup never renders.
+  # Run: python main.py --capture   (on an IN-STOCK product page)
   add_button: ""
   quantity_stepper: ""
   login_wall: ""

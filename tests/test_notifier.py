@@ -6,27 +6,6 @@ import state
 from config import Config, ProductConfig, DeliveryConfig, PollingConfig, PaymentConfig, SafetyConfig, ReliabilityConfig, SelectorsConfig, TelegramConfig, EvolutionConfig
 
 
-@pytest.fixture
-def mock_config() -> Config:
-    return Config(
-        product=ProductConfig(name="Hot Wheels Nissan Skyline", max_price_inr=200),
-        delivery=DeliveryConfig(label="Home"),
-        mode="A",
-        polling=PollingConfig(),
-        payment=PaymentConfig(max_order_value_inr=300),
-        safety=SafetyConfig(max_orders_total=1),
-        reliability=ReliabilityConfig(),
-        selectors=SelectorsConfig(),
-        telegram=TelegramConfig(bot_token="test-token", chat_id="12345"),
-        evolution=EvolutionConfig(
-            base_url="https://evo.example.com",
-            instance="test-instance",
-            apikey="test-key",
-            to_number="919876543210",
-        ),
-    )
-
-
 def test_command_pause_and_resume(tmp_path: Path, mock_config: Config):
     state_file = tmp_path / "state.json"
     s = state.load(state_file)
@@ -42,12 +21,13 @@ def test_command_pause_and_resume(tmp_path: Path, mock_config: Config):
 
 
 def test_command_status(mock_config: Config):
-    s = dict(state.DEFAULTS, order_placed=False)
+    s = dict(state.DEFAULTS)
     with patch("notifier.get_whatsapp_status", return_value={"configured": True, "connected": True}):
         reply, s, stop = notifier.handle_command("/status", mock_config, s)
         assert "Bot Status" in reply
         assert "Mode: A" in reply
-        assert "Can order: True" in reply
+        assert "Bought: 0/1" in reply
+        assert "watching Hot Wheels Nissan Skyline GT-R" in reply
 
 
 def test_command_mode_switch(tmp_path: Path, mock_config: Config):

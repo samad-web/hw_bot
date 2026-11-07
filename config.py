@@ -26,9 +26,11 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class ProductConfig:
+    """One watch target. ``id`` is the Blinkit prid: the stable key for state,
+    since Blinkit resolves product pages by prid and the URL slug is cosmetic."""
+    id: str = ""
     name: str = ""
     url: str = ""
-    search_keywords: list[str] = field(default_factory=lambda: ["hot wheels"])
     max_price_inr: float = 0.0
     quantity: int = 1
 
@@ -58,6 +60,9 @@ class PaymentConfig:
 class SafetyConfig:
     max_orders_total: int = 1
     stop_after_success: bool = True
+    # Hard ceiling on the SUM of every order this bot places. The last line of
+    # defence if a per-order gate is wrong.
+    max_total_spend_inr: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -118,7 +123,7 @@ class EvolutionConfig:
 
 @dataclass(frozen=True)
 class Config:
-    product: ProductConfig
+    products: tuple[ProductConfig, ...]
     delivery: DeliveryConfig
     mode: str
     polling: PollingConfig
@@ -184,15 +189,23 @@ def load_config(
                 config_path,
             )
 
-    # Product
-    prod_raw = raw.get("product") or {}
-    product = ProductConfig(
-        name=str(prod_raw.get("name", "")).strip(),
-        url=str(prod_raw.get("url", "")).strip(),
-        search_keywords=list(prod_raw.get("search_keywords", ["hot wheels"])),
-        max_price_inr=float(prod_raw.get("max_price_inr", 0.0)),
-        quantity=int(prod_raw.get("quantity", 1)),
+    # Products (watch targets)
+    prods_raw = raw.get("products")
+    if not isinstance(prods_raw, list) or not prods_raw:
+        raise ConfigError("config.yaml must define a non-empty 'products:' list")
+    products = tuple(
+        ProductConfig(
+            id=str(p.get("id", "")).strip(),
+            name=str(p.get("name", "")).strip(),
+            url=str(p.get("url", "")).strip(),
+            max_price_inr=float(p.get("max_price_inr", 0.0)),
+            quantity=int(p.get("quantity", 1)),
+        )
+        for p in prods_raw
+        if isinstance(p, dict)
     )
+    if len(products) != len(prods_raw):
+        raise ConfigError("every entry under 'products:' must be a mapping")
 
     # Delivery
     deliv_raw = raw.get("delivery") or {}
@@ -210,15 +223,16 @@ def load_config(
 
     # Polling
     poll_raw = raw.get("polling") or {}
+    # The floor is per HTTP request, and one cycle fetches a page per target,
+    # so it scales with the number of products.
+    floor = MIN_POLLING_INTERVAL_SECONDS * len(products)
     raw_interval = int(poll_raw.get("interval_seconds", 45))
-    if raw_interval < MIN_POLLING_INTERVAL_SECONDS:
+    if raw_interval < floor:
         logger.warning(
-            "polling.interval_seconds (%d) is below hard floor of %ds. Clamping to %ds.",
-            raw_interval,
-            MIN_POLLING_INTERVAL_SECONDS,
-            MIN_POLLING_INTERVAL_SECONDS,
+            "polling.interval_seconds (%d) is below the %ds floor for %d target(s). Clamping to %ds.",
+            raw_interval, floor, len(products), floor,
         )
-        interval = MIN_POLLING_INTERVAL_SECONDS
+        interval = floor
     else:
         interval = raw_interval
 
@@ -240,6 +254,7 @@ def load_config(
     safety = SafetyConfig(
         max_orders_total=int(safe_raw.get("max_orders_total", 1)),
         stop_after_success=bool(safe_raw.get("stop_after_success", True)),
+        max_total_spend_inr=float(safe_raw.get("max_total_spend_inr", 0.0)),
     )
 
     # Reliability
@@ -291,22 +306,44 @@ def load_config(
     healthcheck_url = get_env("HEALTHCHECK_URL", env_vars)
 
     # Fail-fast validation
-    if safety.max_orders_total != 1:
-        raise ConfigError(
-            f"safety.max_orders_total is {safety.max_orders_total}, but only 1 is supported."
-        )
+    ids = [p.id for p in products]
+    for p in products:
+        if not p.id:
+            raise ConfigError(
+                f"product '{p.name or p.url or '?'}' is missing its 'id' (the Blinkit prid "
+                "from the product URL). It is the key the single-order lock is stored under."
+            )
+        if ids.count(p.id) > 1:
+            raise ConfigError(f"duplicate product id '{p.id}' under products:")
+        if p.quantity < 1:
+            raise ConfigError(f"product {p.id}: quantity must be >= 1, got {p.quantity}")
 
-    if product.quantity < 1:
-        raise ConfigError(f"product.quantity must be >= 1, got {product.quantity}")
+    if safety.max_orders_total != len(products):
+        raise ConfigError(
+            f"safety.max_orders_total ({safety.max_orders_total}) must equal the number of "
+            f"products ({len(products)}). Each target is bought at most once."
+        )
 
     if mode == "C":
         if payment.max_order_value_inr <= 0:
             raise ConfigError(
-                "Mode C requires payment.max_order_value_inr > 0 as a hard spend ceiling."
+                "Mode C requires payment.max_order_value_inr > 0 as the per-order spend ceiling."
             )
-        if product.max_price_inr <= 0:
+        if safety.max_total_spend_inr <= 0:
             raise ConfigError(
-                "Mode C requires product.max_price_inr > 0 to prevent purchasing at inflated prices."
+                "Mode C requires safety.max_total_spend_inr > 0 as the ceiling across ALL orders."
+            )
+        for p in products:
+            if p.max_price_inr <= 0:
+                raise ConfigError(
+                    f"Mode C requires max_price_inr > 0 for product {p.id} "
+                    "to prevent purchasing at an inflated price."
+                )
+        cheapest = min(p.max_price_inr for p in products)
+        if safety.max_total_spend_inr < cheapest:
+            raise ConfigError(
+                f"safety.max_total_spend_inr ({safety.max_total_spend_inr:.0f}) is below the "
+                f"cheapest target's ceiling ({cheapest:.0f}); no order could ever pass."
             )
 
     # A bot that cannot alert is useless, and in modes B/C it would spend money
@@ -321,19 +358,20 @@ def load_config(
     # downstream (checker and executor skip the name match), so refuse to run any
     # mode that can touch the cart until they are replaced.
     if mode in ("B", "C"):
-        if not product.url.strip():
-            raise ConfigError("product.url must be set in modes B and C")
-        if not product.name.strip() or product.name.strip().lower().startswith("hot wheels <"):
-            raise ConfigError(
-                "product.name is still the config.yaml placeholder. Set the exact product title "
-                "as shown on the Blinkit page: it is the identity gate that stops the bot from "
-                "ordering the wrong item."
-            )
-        if delivery.pincode.strip() in ("", "000000"):
+        for p in products:
+            if not p.url:
+                raise ConfigError(f"product {p.id}: url must be set in modes B and C")
+            if not p.name or p.name.lower().startswith("hot wheels <"):
+                raise ConfigError(
+                    f"product {p.id}: name is still the config.yaml placeholder. Set the exact "
+                    "product title as shown on the Blinkit page: it is the identity gate that "
+                    "stops the bot from ordering the wrong item."
+                )
+        if delivery.pincode in ("", "000000"):
             raise ConfigError("delivery.pincode is still the placeholder '000000'")
 
-        required = ["product_title", "header_address", "add_button"]
-        missing = [n for n in required if not getattr(selectors, n).strip()]
+        missing = [n for n in ("product_title", "header_address", "add_button")
+                   if not getattr(selectors, n).strip()]
         if missing:
             raise ConfigError(
                 "These selectors are not filled in: " + ", ".join(missing) + ". Run "
@@ -344,7 +382,7 @@ def load_config(
         if not selectors.out_of_stock.strip():
             logger.warning(
                 "selectors.out_of_stock is empty: the bot can detect a restock but will report "
-                "ERROR instead of OUT_OF_STOCK while the item is unavailable."
+                "ERROR instead of OUT_OF_STOCK while an item is unavailable."
             )
 
     if mode == "C":
@@ -359,7 +397,7 @@ def load_config(
             )
 
     return Config(
-        product=product,
+        products=products,
         delivery=delivery,
         mode=mode,
         polling=polling,
