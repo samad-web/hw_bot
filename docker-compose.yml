@@ -1,0 +1,16 @@
+services:
+  hw_bot:
+    build: .
+    container_name: blinkit_hotwheels_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Directories, never single files: state.json is rewritten atomically with
+      # os.replace(), and replacing a bind-mounted FILE fails with EBUSY.
+      - ./profile:/app/profile     # logged-in Blinkit session
+      - ./data:/app/data           # state.json — holds the single-order lock
+      - ./logs:/app/logs           # rotating logs + failure captures
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - TZ=Asia/Kolkata

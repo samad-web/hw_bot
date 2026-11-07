@@ -1,0 +1,6 @@
+playwright>=1.49,<2
+PyYAML>=6,<7
+requests>=2.31,<3
+
+# dev
+pytest>=8

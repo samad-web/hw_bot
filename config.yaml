@@ -1,0 +1,57 @@
+# Blinkit Hot Wheels bot — non-secret configuration.
+# Secrets live in .env only. See .env.example.
+
+product:
+  name: "Hot Wheels <exact model name>"      # TODO must match the product title on the page
+  url: ""                                     # TODO Blinkit product URL; empty = search by keyword
+  search_keywords: ["hot wheels"]
+  max_price_inr: 0                            # abort above this. 0 = unset (rejected in mode C)
+  quantity: 1
+
+delivery:
+  label: "Home"                               # TODO saved address label on the account
+  lat: 0.0
+  lng: 0.0
+  pincode: "000000"                           # TODO
+
+mode: "A"                                     # A notify only | B cart + confirm | C full auto-order
+
+polling:
+  interval_seconds: 45
+  jitter_seconds: 15                          # random +/- applied to the interval
+
+payment:
+  priority: ["blinkit_wallet"]                # blinkit_wallet | cod | saved_card_otp_relay
+  max_order_value_inr: 0                      # hard ceiling on total payable incl. fees
+  otp_relay_timeout_seconds: 120
+
+safety:
+  max_orders_total: 1                         # must be 1; only single-order runs are supported
+  stop_after_success: true
+
+reliability:
+  recycle_hours: 6                            # relaunch the browser context this often
+  heartbeat_hours: 6                          # "still watching" message interval
+
+# All Blinkit CSS selectors live here and nowhere else, so a UI change is a config edit.
+# Every value is a TODO until filled in from real HTML captured with: python main.py --capture
+selectors:
+  product_title: ""
+  product_id: ""
+  add_button: ""
+  out_of_stock: ""        # "Notify Me" / "Out of stock" indicator
+  quantity_stepper: ""
+  header_address: ""      # delivery address shown in the page header
+  login_wall: ""          # element that only appears when logged out
+  cart_open: ""
+  cart_items: ""
+  cart_address: ""
+  cart_total: ""
+  checkout_button: ""
+  payment_methods: ""
+  wallet_balance: ""
+  pay_button: ""
+  otp_input: ""
+  order_confirmation: ""
+  order_id: ""
+  order_history: ""

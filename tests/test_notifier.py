@@ -1,0 +1,107 @@
+import pytest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+import notifier
+import state
+from config import Config, ProductConfig, DeliveryConfig, PollingConfig, PaymentConfig, SafetyConfig, ReliabilityConfig, SelectorsConfig, TelegramConfig, EvolutionConfig
+
+
+@pytest.fixture
+def mock_config() -> Config:
+    return Config(
+        product=ProductConfig(name="Hot Wheels Nissan Skyline", max_price_inr=200),
+        delivery=DeliveryConfig(label="Home"),
+        mode="A",
+        polling=PollingConfig(),
+        payment=PaymentConfig(max_order_value_inr=300),
+        safety=SafetyConfig(max_orders_total=1),
+        reliability=ReliabilityConfig(),
+        selectors=SelectorsConfig(),
+        telegram=TelegramConfig(bot_token="test-token", chat_id="12345"),
+        evolution=EvolutionConfig(
+            base_url="https://evo.example.com",
+            instance="test-instance",
+            apikey="test-key",
+            to_number="919876543210",
+        ),
+    )
+
+
+def test_command_pause_and_resume(tmp_path: Path, mock_config: Config):
+    state_file = tmp_path / "state.json"
+    s = state.load(state_file)
+
+    reply, s, stop = notifier.handle_command("/pause", mock_config, s, str(state_file))
+    assert "paused" in reply.lower()
+    assert s["paused"] is True
+    assert stop is False
+
+    reply, s, stop = notifier.handle_command("/resume", mock_config, s, str(state_file))
+    assert "resumed" in reply.lower()
+    assert s["paused"] is False
+
+
+def test_command_status(mock_config: Config):
+    s = dict(state.DEFAULTS, order_placed=False)
+    with patch("notifier.get_whatsapp_status", return_value={"configured": True, "connected": True}):
+        reply, s, stop = notifier.handle_command("/status", mock_config, s)
+        assert "Bot Status" in reply
+        assert "Mode: A" in reply
+        assert "Can order: True" in reply
+
+
+def test_command_mode_switch(tmp_path: Path, mock_config: Config):
+    state_file = tmp_path / "state.json"
+    s = state.load(state_file)
+
+    reply, s, stop = notifier.handle_command("/mode B", mock_config, s, str(state_file))
+    assert "Switched to Mode B" in reply
+    assert s["mode"] == "B"
+
+    # Invalid mode
+    reply, s, _ = notifier.handle_command("/mode Z", mock_config, s, str(state_file))
+    assert "Usage: /mode" in reply
+
+
+def test_command_otp(tmp_path: Path, mock_config: Config):
+    state_file = tmp_path / "state.json"
+    s = state.load(state_file)
+
+    # Valid OTP
+    reply, s, stop = notifier.handle_command("/otp 482910", mock_config, s, str(state_file))
+    # An OTP must never reach disk. The relay is not implemented, so the command
+    # acknowledges and discards the code.
+    assert "not implemented" in reply
+    assert "pending_otp" not in s
+    if state_file.exists():
+        assert "482910" not in state_file.read_text(encoding="utf-8")
+
+    # Malformed OTP (alphanumeric or too short)
+    reply, s, _ = notifier.handle_command("/otp 12a", mock_config, s, str(state_file))
+    assert "Invalid OTP" in reply
+
+
+def test_poll_commands_ignores_unauthorized_chat(tmp_path: Path, mock_config: Config):
+    state_file = tmp_path / "state.json"
+    s = state.load(state_file)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "ok": True,
+        "result": [
+            {
+                "update_id": 101,
+                "message": {
+                    "chat": {"id": 999999},  # Unauthorized chat
+                    "text": "/pause",
+                },
+            }
+        ],
+    }
+
+    with patch("requests.get", return_value=mock_resp), patch("notifier.send_telegram") as mock_send:
+        s, stop = notifier.poll_commands(mock_config, s, str(state_file))
+        assert s.get("paused") is False  # Not paused!
+        assert not mock_send.called
+        assert s["telegram_offset"] == 102
