@@ -28,3 +28,10 @@
 - Order-history check before a payment retry (F6 AC6/7) — not implemented; the lock fails safe by refusing all retries and alerting.
 - Card OTP relay (spec req 13) — not implemented; wallet is the configured method.
 - All selectors still empty: they require a real logged-in capture.
+
+## 2026-11-07 — feat(watcher): real selectors + hydration wait
+- Filled `selectors.product_title`, `header_address`, `out_of_stock` from live Blinkit HTML; each verified unique in the DOM.
+- Blinkit's out-of-stock marker is `div.tw-text-yellow-700` containing "Coming soon", inside a unique sticky bottom bar.
+- Added an 8 s wait for the location bar to hydrate: Blinkit SSRs it as an empty shimmer, which the checker previously read as `""` and reported as false `location_drift` on every cycle.
+- Remaining selectors cannot be derived anonymously: with no delivery address Blinkit reports every product "Coming soon", so in-stock markup never renders. They need `--capture` from a logged-in session.
+- Tests 47 → 49.

@@ -185,3 +185,32 @@ def test_unknown_layout_detected(base_config: Config):
     res = check(page, base_config)
     assert res.kind == CheckResultKind.ERROR
     assert res.error_kind == "unknown_layout"
+
+
+def test_waits_for_location_bar_to_hydrate(base_config: Config):
+    """Blinkit server-renders the location bar as an empty shimmer and fills the
+    address client-side, so reading it immediately looks exactly like drift."""
+    from unittest.mock import MagicMock
+
+    page = MagicMock()
+    page.is_visible.return_value = False
+    page.query_selector.return_value = None
+
+    check(page, base_config)
+
+    assert page.wait_for_function.called, "must wait for the address to hydrate"
+    called_with = str(page.wait_for_function.call_args)
+    assert base_config.selectors.header_address in called_with
+
+
+def test_hydration_timeout_does_not_crash_the_check(base_config: Config):
+    """A hydration timeout must degrade to a normal ERROR verdict, not an exception."""
+    from unittest.mock import MagicMock
+
+    page = MagicMock()
+    page.wait_for_function.side_effect = TimeoutError("hydration timed out")
+    page.is_visible.return_value = False
+    page.query_selector.return_value = None
+
+    res = check(page, base_config)
+    assert res.kind == CheckResultKind.ERROR

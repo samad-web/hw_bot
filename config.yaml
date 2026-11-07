@@ -36,17 +36,28 @@ reliability:
 # All Blinkit CSS selectors live here and nowhere else, so a UI change is a config edit.
 # Every value is a TODO until filled in from real HTML captured with: python main.py --capture
 selectors:
-  product_title: ""
+  # Verified 2026-11-07 against live Blinkit product HTML. Each is unique in the
+  # DOM. "tw-" classes are Tailwind utilities (deterministic); styled-components
+  # classes carry a build hash, so they are matched with class*= on the stable
+  # component-name prefix only.
+  product_title: 'div.tw-line-clamp-50'
   product_id: ""
+  header_address: 'div[class*="LocationBar__Container"]'
+  out_of_stock: 'div.tw-text-yellow-700'          # the "Coming soon" text in the sticky bottom bar
+
+  # TODO capture these from YOUR logged-in session with a location set.
+  # They cannot be derived anonymously: with no delivery address Blinkit reports
+  # every product as "Coming soon", so the in-stock markup never renders.
+  # Run: python main.py --capture  (on an IN-STOCK product page)
   add_button: ""
-  out_of_stock: ""        # the "Coming soon" element (Blinkit does not use "Notify Me")
   quantity_stepper: ""
-  header_address: ""      # delivery address shown in the page header
-  login_wall: ""          # element that only appears when logged out
+  login_wall: ""
   cart_open: ""
   cart_items: ""
   cart_address: ""
   cart_total: ""
+
+  # TODO Mode C only. Obtainable solely by walking a real checkout.
   checkout_button: ""
   payment_methods: ""
   wallet_balance: ""

@@ -16,6 +16,10 @@ from config import Config
 
 logger = logging.getLogger("hw_bot")
 
+# How long to let the client-side app fill in the delivery address before
+# treating an empty location bar as drift.
+HYDRATION_TIMEOUT_MS = 8000
+
 
 class CheckResultKind(str, Enum):
     IN_STOCK = "IN_STOCK"
@@ -67,7 +71,19 @@ def check(page: Any, cfg: Config) -> CheckResult:
         except Exception as e:
             logger.debug("Error checking login wall selector: %s", e)
 
-    # 3. Location assertion
+    # 3. Location assertion. Blinkit server-renders the location bar as an empty
+    # shimmer and fills the address in client-side, so reading it too early looks
+    # exactly like location drift. Wait for real text before judging.
+    try:
+        page.wait_for_function(
+            "sel => { const el = document.querySelector(sel);"
+            " return !!el && el.innerText.trim().length > 0; }",
+            arg=selectors.header_address,
+            timeout=HYDRATION_TIMEOUT_MS,
+        )
+    except Exception as exc:
+        logger.debug("Delivery address did not hydrate in %dms: %s", HYDRATION_TIMEOUT_MS, exc)
+
     try:
         addr_el = page.query_selector(selectors.header_address)
         if not addr_el:
