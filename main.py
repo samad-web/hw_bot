@@ -391,7 +391,15 @@ def main(argv: list[str] | None = None) -> int:
         greeting += (f"\n- Spend cap Rs {cfg.safety.max_total_spend_inr:.0f}"
                      f" (spent so far Rs {bot_state.get('total_spent', 0):.0f})")
     logger.info("Bot started in %s watching %d target(s).", mode_desc, len(remaining))
-    notifier.send(greeting, cfg)
+    # Startup self-test: if no remote channel actually delivers, the bot would
+    # watch silently and you would miss the restock. Make that impossible to ignore.
+    startup = notifier.send(greeting, cfg)
+    if not any(v for k, v in startup.items() if k in ("telegram", "whatsapp")):
+        warn = ("ALERT CHANNELS DOWN: the startup message reached no remote channel "
+                "(WhatsApp/Telegram). You will NOT get restock alerts on your phone. "
+                "Fix the Evolution server or add a Telegram token in .env.")
+        logger.error(warn)
+        notifier.notify_local(warn)
 
     # Graceful shutdown handler
     running = True

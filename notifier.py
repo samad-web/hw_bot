@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
+import sys
 import time
 from typing import Any
 
@@ -137,8 +139,33 @@ def send_whatsapp(text: str, cfg: Config) -> bool:
     return False
 
 
+def notify_local(text: str) -> bool:
+    """Make noise on the local machine: a sound plus a foreground message box.
+
+    Last line of defence so a restock is never silent when the remote channels
+    are down (the Evolution server, a missing Telegram token). Windows only via
+    PowerShell; a no-op elsewhere. Never raises.
+    """
+    if sys.platform != "win32":
+        return False
+    safe = text.replace("'", " ").replace("\n", "  ")[:400]
+    ps = (
+        "[console]::beep(1000,600);[console]::beep(1300,600);"
+        "Add-Type -AssemblyName PresentationFramework;"
+        f"[System.Windows.MessageBox]::Show('{safe}','Blinkit Hot Wheels')"
+    )
+    try:
+        # Detached: a modal box must never block the watch loop.
+        subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return True
+    except Exception as exc:  # noqa: BLE001 - local alert must never crash the bot
+        logger.warning("Local notification failed: %s", exc)
+        return False
+
+
 def send(text: str, cfg: Config, priority: bool = False) -> dict[str, bool]:
-    """Fan-out notification to all configured channels."""
+    """Fan-out notification to all configured channels, with a local fallback."""
     results: dict[str, bool] = {}
 
     if cfg.telegram.is_configured:
@@ -146,6 +173,10 @@ def send(text: str, cfg: Config, priority: bool = False) -> dict[str, bool]:
 
     if cfg.evolution.is_configured:
         results["whatsapp"] = send_whatsapp(text, cfg)
+
+    # A restock, or any message no remote channel delivered, also fires locally.
+    if priority or (results and not any(results.values())):
+        results["local"] = notify_local(text)
 
     return results
 
