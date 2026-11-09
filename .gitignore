@@ -24,3 +24,6 @@ venv/
 # portable session export: contains live auth cookies
 session.json
 profile-docker/
+
+# appium app-capture dumps (UI XML + screenshots of the live app)
+logs/app_capture/

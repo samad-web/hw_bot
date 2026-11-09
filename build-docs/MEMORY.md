@@ -62,3 +62,11 @@ Investigated while trying to harvest Mode C selectors. Evidence, all consistent:
 - `safety.max_orders_total`, wallet balance and the spend cap are moot until an ordering path exists.
 - Auto-ordering would require spec Section 7 option 2 (Android emulator + Appium) — a substantial separate build — or the undocumented mobile API, which the project's constraints rule out.
 - The config-validation guard that blocks Mode C without checkout selectors is doing exactly its job and should stay.
+
+## 2026-11-08 — Blinkit APK analysis: ordering API found but gated
+Extracted Blinkit.apk (user-supplied, their own account). Findings:
+- Order endpoint: `POST api3.blinkit.com/v3/cart/orders/`; payment via `/v2/sdk/make_payment`, `/v2/sdk/complete_payment`. Hosts: jumbo.blinkit.com, api3.blinkit.com, api2.grofers.com.
+- Auth headers: access_token, auth_key, device_id, session_id, merchant_id, app_version, platform, **x-sig**.
+- **Guarded by two walls:** (1) HMAC request signing (x-sig; `hmac`/`signature` classes, 33/62 refs) and (2) **Google Play Integrity attestation** (full IntegrityManager/IntegrityTokenRequest stack in dex). No native .so — signing is in Java/Kotlin dex.
+- **Verdict:** direct Python calls to /v3/cart/orders/ are NOT realistically achievable. HMAC signing is crackable with effort; Play Integrity is a device-attestation wall designed to be unforgeable from a script. Confirms web-automation and raw-API paths are both dead for auto-ordering.
+- **Only viable auto-buy path:** drive the REAL app (Play Integrity + signing handled by the genuine app) on an Android emulator with Play Services via Appium/UIAutomator — spec Section 7 option 2, a separate build. Otherwise: Mode A alert + manual tap stays the deliverable.
