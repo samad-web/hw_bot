@@ -7,6 +7,7 @@ and executes cart/checkout actions according to configured mode and safety rules
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import dataclasses
 import logging
@@ -32,6 +33,25 @@ logger = logging.getLogger("hw_bot")
 
 DEFAULT_PROFILE_DIR = Path("profile")
 DEFAULT_SESSION_FILE = Path("session.json")
+MOBILE_UA = ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
+
+
+def browser_options() -> dict[str, Any]:
+    """Launch options for every unattended flow.
+
+    BROWSER_PROXY sends Blinkit traffic through the home relay (the VPS IP gets
+    403). BROWSER_HEADLESS=0 runs a real window (Xvfb on the VPS): /checkout's
+    Cloudflare check rejects headless browsers.
+    """
+    opts: dict[str, Any] = {
+        "headless": os.environ.get("BROWSER_HEADLESS", "1") != "0",
+        "viewport": {"width": 412, "height": 915},
+        "user_agent": MOBILE_UA,
+    }
+    if os.environ.get("BROWSER_PROXY"):
+        opts["proxy"] = {"server": os.environ["BROWSER_PROXY"]}
+    return opts
 
 
 def export_session(context: Any, path: Path = DEFAULT_SESSION_FILE) -> Path:
@@ -111,12 +131,7 @@ def run_login_flow(cfg: Config, profile_dir: Path = DEFAULT_PROFILE_DIR) -> int:
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
-            headless=False,
-            viewport={"width": 412, "height": 915},
-            user_agent=(
-                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-            ),
+            **{**browser_options(), "headless": False},
         )
         page = context.new_page()
         target_url = (cfg.products[0].url if cfg.products else "") or "https://blinkit.com"
@@ -159,12 +174,7 @@ def run_session_flow(cfg: Config, export: bool,
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
-            headless=True,
-            viewport={"width": 412, "height": 915},
-            user_agent=(
-                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-            ),
+            **browser_options(),
         )
         try:
             if export:
@@ -231,12 +241,7 @@ def run_capture_flow(cfg: Config, profile_dir: Path = DEFAULT_PROFILE_DIR) -> in
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
-            headless=True,
-            viewport={"width": 412, "height": 915},
-            user_agent=(
-                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-            ),
+            **browser_options(),
         )
         page = context.new_page()
         for product in cfg.products:
@@ -417,6 +422,7 @@ def main(argv: list[str] | None = None) -> int:
     last_heartbeat_ts = start_ts
     last_recycle_ts = start_ts
     last_blind_alert_ts = 0.0
+    relay_down = False  # one alert per outage, not one per failed page load
 
     profile_dir = DEFAULT_PROFILE_DIR
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -425,12 +431,7 @@ def main(argv: list[str] | None = None) -> int:
         """Open the persistent context. One profile, one page, reused between checks."""
         ctx = pw.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
-            headless=True,
-            viewport={"width": 412, "height": 915},
-            user_agent=(
-                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-            ),
+            **browser_options(),
         )
         return ctx, ctx.new_page()
 
@@ -514,9 +515,26 @@ def main(argv: list[str] | None = None) -> int:
                         break
                     now = time.time()
                     try:
-                        page.goto(product.url, timeout=30000, wait_until="domcontentloaded")
+                        page.goto(product.url, timeout=60000, wait_until="domcontentloaded")
                     except Exception as exc:
+                        # Never check the previous page's DOM: it would report a stale status.
                         logger.warning("Navigation to product %s failed: %s", product.id, exc)
+                        cons = bot_state.get("consecutive_errors", 0) + 1
+                        bot_state = state.save(bot_state, state_path, consecutive_errors=cons,
+                                               last_status="ERROR", last_check_ts=int(now))
+                        if not relay_down:
+                            relay_down = True
+                            notifier.send(
+                                ("RELAY OFFLINE: cannot reach Blinkit through the home phone. "
+                                 "Check it is on charger + Wi-Fi with Tailscale on. "
+                                 if os.environ.get("BROWSER_PROXY") else
+                                 "Cannot reach Blinkit (network down?). ")
+                                + "Not watching until it is back.", cfg, priority=True)
+                        time.sleep(hardening.next_delay(cons))
+                        continue
+                    if relay_down:
+                        relay_down = False
+                        notifier.send("Connection to Blinkit is back. Watching again.", cfg)
 
                     res = checker.check(page, cfg, product)
                     bot_state = state.save(bot_state, state_path,

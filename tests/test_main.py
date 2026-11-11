@@ -142,3 +142,40 @@ def test_loop_writes_state_to_the_path_given_by_state_flag(tmp_path: Path, monke
 
     assert state_file.exists(), "--state path must receive the writes"
     assert not (Path.cwd() / "state.json.tmp").exists()
+
+
+def test_navigation_failure_skips_check_and_alerts_relay_once(tmp_path: Path, monkeypatch):
+    """F10: a failed goto (relay offline) must not check the stale previous DOM,
+    and must alert once per outage, then once on recovery."""
+    from checker import CheckResult, CheckResultKind
+
+    cfg_file = _write_mode_a_project(tmp_path)
+    page = MagicMock()
+    # fail, fail, then succeed
+    page.goto.side_effect = [Exception("ERR_SOCKS_CONNECTION_FAILED"),
+                             Exception("ERR_SOCKS_CONNECTION_FAILED"), None, None]
+    ctx = MagicMock(); ctx.new_page.return_value = page
+    pw = MagicMock(); pw.chromium.launch_persistent_context.return_value = ctx
+    pw_cm = MagicMock(); pw_cm.__enter__.return_value = pw
+
+    sleeps = {"n": 0}
+    def fake_sleep(_s):
+        sleeps["n"] += 1
+        if sleeps["n"] >= 4:
+            raise SystemExit
+    checks = MagicMock(return_value=CheckResult(CheckResultKind.OUT_OF_STOCK, product_title="x"))
+    sent = []
+    monkeypatch.setenv("BROWSER_PROXY", "socks5://127.0.0.1:1055")
+    monkeypatch.setattr(main, "sync_playwright", lambda: pw_cm)
+    monkeypatch.setattr(main.time, "sleep", fake_sleep)
+    monkeypatch.setattr(main.notifier, "send", lambda t, c, priority=False: sent.append(t) or {"whatsapp": True})
+    monkeypatch.setattr(main.notifier, "poll_commands", lambda cfg, st, sp=None: (st, False))
+    monkeypatch.setattr(main.checker, "check", checks)
+
+    with pytest.raises(SystemExit):
+        main.main(["--config", str(cfg_file), "--env", str(tmp_path / ".env"),
+                   "--state", str(tmp_path / "state.json")])
+
+    assert checks.call_count == 2, "check runs only for the 2 successful gotos, never the 2 failed"
+    assert sum("RELAY OFFLINE" in t for t in sent) == 1
+    assert sum(t.startswith("Connection to Blinkit is back") for t in sent) == 1

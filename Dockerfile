@@ -10,6 +10,9 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     curl \
+    xvfb \
+    xauth \
+    libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies
@@ -25,4 +28,6 @@ RUN mkdir -p /app/profile /app/logs /app/data
 
 # State lives in a mounted DIRECTORY: state.json is rewritten with os.replace(),
 # which fails with EBUSY against a bind-mounted single file.
-CMD ["python", "main.py", "--state", "/app/data/state.json"]
+# Virtual screen: the browser runs headful (BROWSER_HEADLESS=0) because Blinkit's
+# checkout rejects headless browsers.
+CMD ["xvfb-run", "-a", "python", "main.py", "--state", "/app/data/state.json"]

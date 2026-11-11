@@ -18,9 +18,11 @@ logger = logging.getLogger("hw_bot")
 
 # How long to let the client-side app fill in the delivery address before
 # treating an empty location bar as drift.
-HYDRATION_TIMEOUT_MS = 8000
+# 20s, not 8s: through the home-phone relay the bar was still a shimmer at 8s.
+# The wait ends as soon as it renders, so this only delays the ERROR verdict.
+HYDRATION_TIMEOUT_MS = 20000
 # The sticky action bar renders after the location bar, so it needs its own wait.
-CTA_TIMEOUT_MS = 8000
+CTA_TIMEOUT_MS = 20000
 
 
 class CheckResultKind(str, Enum):

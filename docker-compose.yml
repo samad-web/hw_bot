@@ -1,8 +1,31 @@
 services:
+  # Home relay (F10). Blinkit returns 403 to the VPS IP, so the bot's browser goes
+  # through the user's phone at home (Tailscale exit node). Userspace mode: only
+  # traffic sent to the SOCKS port uses the phone; the VPS's own routes are untouched.
+  # Login persists in ./tailscale. The exit node is stated here, not left in saved
+  # prefs: containerboot re-runs `tailscale up` on every start and refuses when the
+  # saved settings differ from its flags (--reset makes these flags the whole truth).
+  # 100.90.34.88 = the phone (cmf-by-nothing-phone-1).
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: hw_tailscale
+    restart: unless-stopped
+    environment:
+      - TS_USERSPACE=true
+      - TS_SOCKS5_SERVER=127.0.0.1:1055
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_HOSTNAME=hw-bot-vps
+      - TS_EXTRA_ARGS=--reset --exit-node=100.90.34.88
+    volumes:
+      - ./tailscale:/var/lib/tailscale
+
   hw_bot:
     build: .
     container_name: blinkit_hotwheels_bot
     restart: unless-stopped
+    network_mode: service:tailscale   # reach the SOCKS port on 127.0.0.1
+    init: true   # xvfb-run as PID 1 never receives Xvfb's ready signal and hangs
+    depends_on: [tailscale]
     env_file:
       - .env
     volumes:
@@ -21,3 +44,5 @@ services:
       - ./session.json:/app/session.json:ro
     environment:
       - TZ=Asia/Kolkata
+      - BROWSER_PROXY=socks5://127.0.0.1:1055
+      - BROWSER_HEADLESS=0
