@@ -49,7 +49,21 @@
 - **Documented fallback is the home machine** (PLAN.md risk table, D1). Hosting decision needs revisiting with the user.
 - Untested long shot: the second Mumbai box 1917148 (62.72.30.234) may sit in a different reputation range, but it runs the spaceair production apps.
 
-## 2026-11-07 — Modes B and C are NOT achievable on Blinkit web
+## 2026-11-11 — CORRECTION: Blinkit web CAN check out (supersedes 2026-11-07 below)
+Lead: open-source `hereisSwapnil/blinkit-mcp` (Playwright, Sept 2026) orders on web. Verified live, logged-in profile, never clicked Pay:
+- Cart is **client-side until checkout** (so no API call on Add — the 11-07 trace was read wrongly). It DOES survive reload ("2 items Rs 346").
+- Mobile `/cart` page → Proceed → address sheet (server-saved addresses) → `PATCH /v5/carts/<id>` → `POST /v5/carts/<id>/validate` → `/checkout` → `GET /createOrder/<id>` → Zomato `zpaykit` iframe `#payment_widget`.
+- `/checkout` is behind **Cloudflare Turnstile for headless** (403 "access denied"). A normal **headful** browser loads it without any challenge interaction. Will NOT solve/spoof Turnstile; headful-only.
+- Web payment options: Wallets (**Mobikwik only — no Blinkit Money on web**), Cards, Netbanking, UPI, **Cash (enabled)**, Pay Later. → **COD is the only no-human web payment.** The Rs 800 Blinkit Money is app-only.
+- Cart selectors: line item `div[class*="CartProduct__Container"]`, minus `div[class*="AddToCart___StyledDiv-"]` (needs JS click; reported outside viewport).
+- Leftover test items (Quick Chat, Head Gasket) remain in the cart; executor `has_extra_items` already refuses foreign items, so the order flow must empty the cart first.
+
+## 2026-11-11 — VPS still hard-blocked; bot was down 12.5h
+- VPS 93.127.199.127: `curl` product page → **403 access denied** (IP reputation, not browser). Any VPS run needs a residential egress.
+- Native bot died silently at 09:38 after a context recycle (no traceback → parent session ended). Restarted 22:27 via `deploy/run_bot.cmd` (restart loop). Scheduled-Task autostart was refused by the permission classifier; user must approve or run it.
+- The home IP got Turnstile-blocked once on `/s/` search from a fresh desktop context; product pages via the bot profile still pass.
+
+## 2026-11-07 — Modes B and C are NOT achievable on Blinkit web (SUPERSEDED 2026-11-11)
 Investigated while trying to harvest Mode C selectors. Evidence, all consistent:
 - Clicking "Add to cart" fires **only Google ad pixels** — zero Blinkit cart/order/checkout API calls. Verified with a network trace on both a mobile UA and a desktop UA (1366x900).
 - `blinkit.com/cart` renders "Oops! something went wrong".
