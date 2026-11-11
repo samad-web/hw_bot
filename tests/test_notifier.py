@@ -26,7 +26,7 @@ def test_command_status(mock_config: Config):
         reply, s, stop = notifier.handle_command("/status", mock_config, s)
         assert "Bot Status" in reply
         assert "Mode: A" in reply
-        assert "Bought: 0/1" in reply
+        assert "Orders: 0/1" in reply
         assert "watching Hot Wheels Nissan Skyline GT-R" in reply
 
 

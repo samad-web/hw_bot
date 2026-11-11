@@ -117,7 +117,7 @@ def test_checkout_lock_written_before_pay(tmp_path: Path, mock_config: Config, t
     assert res.success and res.order_id == "12345678" and res.payment_method == "cod"
     assert seen == [target.id], "lock must name this product on disk at the Pay click"
     final = state.load(state_file)
-    assert final["orders"][target.id]["order_id"] == "12345678"
+    assert final["orders"][target.id][-1]["order_id"] == "12345678"
     assert final["payment_attempt_started"] is None
 
 

@@ -67,3 +67,12 @@ Live verification: four consecutive cycles, both cars correctly OUT_OF_STOCK, no
 - Container gets its own `profile-docker/` volume. Mounting the host's Windows `profile/` both failed to decrypt and risked corrupting the profile `--login`/`--capture` rely on.
 - Verified locally: session imported (19 cookies, 1 origin), both cars OUT_OF_STOCK across repeated cycles, no Cloudflare challenge on a residential IP.
 - Verified `restart: unless-stopped` fires on a real crash (control container restarted twice). Note `docker kill` never triggers it — Docker treats a manual kill as user-initiated, so it is not a valid crash test.
+
+## 2026-11-11 — feat(home-relay) a215321, fix 4d1bcd5
+- VPS runs the bot; Blinkit traffic goes through the user's old Android phone (Tailscale exit node, userspace SOCKS5 sidecar). Headful Chromium under Xvfb (`init: true`, else xvfb-run hangs as PID 1).
+- A failed page load no longer checks the stale DOM; one RELAY OFFLINE alert per outage + recovery alert; 60s retry while down.
+
+## 2026-11-12 — feat(web-cod-checkout) 9809ae1, 6818599, + repeat orders
+- Web checkout with Cash on Delivery: Add -> /cart (foreign lines removed, 1 unit) -> Proceed To Pay -> payment iframe -> address re-verified -> COD -> lock -> Pay Now (visible, enabled).
+- Repeat orders: `max_orders` per product (Supra 3, Ram 3); the next order is placed once the previous is confirmed and the car is still in stock. `orders[prid]` is now a list (old single records migrate).
+- `--practice PRID`: full dry run, stops before Pay Now, empties the cart.

@@ -40,6 +40,9 @@ class ProductConfig:
     url: str = ""
     max_price_inr: float = 0.0
     quantity: int = 1
+    # Separate orders of this target, one unit each; the next is placed once the
+    # previous is confirmed and it is still in stock (D14).
+    max_orders: int = 1
 
 
 @dataclass(frozen=True)
@@ -215,6 +218,7 @@ def load_config(
             url=str(p.get("url", "")).strip(),
             max_price_inr=float(p.get("max_price_inr", 0.0)),
             quantity=int(p.get("quantity", 1)),
+            max_orders=int(p.get("max_orders", 1)),
         )
         for p in prods_raw
         if isinstance(p, dict)
@@ -314,11 +318,16 @@ def load_config(
             raise ConfigError(f"duplicate product id '{p.id}' under products:")
         if p.quantity < 1:
             raise ConfigError(f"product {p.id}: quantity must be >= 1, got {p.quantity}")
+        if p.max_orders < 1:
+            raise ConfigError(f"product {p.id}: max_orders must be >= 1, got {p.max_orders}")
 
-    if safety.max_orders_total != len(products):
+    # A deliberate second statement of the same number: a typo in one place
+    # cannot silently allow extra orders.
+    expected = sum(p.max_orders for p in products)
+    if safety.max_orders_total != expected:
         raise ConfigError(
-            f"safety.max_orders_total ({safety.max_orders_total}) must equal the number of "
-            f"products ({len(products)}). Each target is bought at most once."
+            f"safety.max_orders_total ({safety.max_orders_total}) must equal the sum of "
+            f"products' max_orders ({expected})."
         )
 
     if mode == "C":

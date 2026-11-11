@@ -4,7 +4,8 @@ One process, one writer, so no locking is needed — but every write must be
 atomic, because a crash mid-write that left a corrupt file would either stop
 the bot from starting or (far worse) look like a cleared lock.
 
-Each watch target gets its own entry under ``orders``, keyed by Blinkit prid.
+Each watch target gets a LIST of orders under ``orders``, keyed by Blinkit prid:
+a target may be ordered repeatedly (one unit per order) up to its max_orders.
 ``payment_attempt_started`` is global and holds the prid currently being paid
 for: only one checkout may ever be in flight.
 """
@@ -20,7 +21,7 @@ from typing import Any
 DEFAULT_PATH = "state.json"
 
 DEFAULTS: dict[str, Any] = {
-    "orders": {},                     # prid -> {"order_id": str, "spent": float, "ts": int}
+    "orders": {},                     # prid -> [{"order_id": str, "spent": float, "ts": int}, ...]
     "payment_attempt_started": None,  # prid mid-payment, else None
     "total_spent": 0.0,
     "last_status": None,
@@ -78,14 +79,19 @@ def save(state: dict[str, Any], path: str | os.PathLike[str] | None = None,
     return new
 
 
-def is_bought(state: dict[str, Any], prid: str) -> bool:
-    """True when this specific target has already been ordered."""
-    return str(prid) in (state.get("orders") or {})
+def order_count(state: dict[str, Any], prid: str) -> int:
+    """How many orders this target already has."""
+    return len((state.get("orders") or {}).get(str(prid)) or [])
 
 
-def all_bought(state: dict[str, Any], total_targets: int) -> bool:
-    """True when every watch target has been ordered."""
-    return len(state.get("orders") or {}) >= total_targets
+def is_bought(state: dict[str, Any], prid: str, max_orders: int = 1) -> bool:
+    """True when this target has reached its order limit."""
+    return order_count(state, prid) >= max_orders
+
+
+def all_bought(state: dict[str, Any], max_orders_total: int) -> bool:
+    """True when the orders across all targets reach the overall limit."""
+    return sum(len(v or []) for v in (state.get("orders") or {}).values()) >= max_orders_total
 
 
 def needs_manual_check(state: dict[str, Any]) -> bool:
@@ -100,9 +106,10 @@ def needs_manual_check(state: dict[str, Any]) -> bool:
 
 def record_order(state: dict[str, Any], prid: str, order_id: str | None,
                  amount: float, path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    """Mark a target bought and clear the in-flight flag, in one atomic write."""
+    """Append an order for this target and clear the in-flight flag, in one atomic write."""
     orders = dict(state.get("orders") or {})
-    orders[str(prid)] = {"order_id": order_id, "spent": float(amount), "ts": int(time.time())}
+    orders[str(prid)] = [*(orders.get(str(prid)) or []),
+                         {"order_id": order_id, "spent": float(amount), "ts": int(time.time())}]
     return save(
         state, path,
         orders=orders,
@@ -113,7 +120,7 @@ def record_order(state: dict[str, Any], prid: str, order_id: str | None,
 
 def can_order(state: dict[str, Any], prid: str, max_orders_total: int = 1,
               max_total_spend_inr: float = 0.0,
-              order_total: float = 0.0) -> tuple[bool, str]:
+              order_total: float = 0.0, max_orders: int = 1) -> tuple[bool, str]:
     """Whether this target may be ordered right now, and why not if it isn't."""
     if state.get("corrupt"):
         return False, "state file was corrupt and quarantined; refusing to order"
@@ -122,12 +129,12 @@ def can_order(state: dict[str, Any], prid: str, max_orders_total: int = 1,
             f"a payment for product {state.get('payment_attempt_started')} was never confirmed; "
             "check Blinkit order history before allowing any further order"
         )
-    if is_bought(state, prid):
-        return False, f"product {prid} was already ordered (single-order lock)"
+    if is_bought(state, prid, max_orders):
+        return False, f"product {prid} already ordered {order_count(state, prid)} of {max_orders} time(s)"
     if max_orders_total < 1:
         return False, "max_orders_total is below 1"
     if all_bought(state, max_orders_total):
-        return False, f"all {max_orders_total} targets have already been ordered"
+        return False, f"all {max_orders_total} orders have already been placed"
     if max_total_spend_inr > 0 and order_total > 0:
         projected = float(state.get("total_spent", 0.0)) + order_total
         if projected > max_total_spend_inr:
@@ -146,6 +153,9 @@ def _migrate(data: dict[str, Any]) -> dict[str, Any]:
     flagged for human review rather than guessed at.
     """
     if "orders" in data:
+        # One record per prid (before repeat orders) becomes a one-item list.
+        data = dict(data, orders={k: v if isinstance(v, list) else [v]
+                                  for k, v in (data["orders"] or {}).items()})
         return data
     data = dict(data)
     legacy_placed = data.pop("order_placed", False)

@@ -66,7 +66,7 @@ def validate_cart(cart: CartResult, cfg: Config, product: ProductConfig,
     """Perform pre-checkout safety checks. Every rule must pass or checkout aborts."""
     can_ord, reason = state.can_order(
         current_state, product.id, cfg.safety.max_orders_total,
-        cfg.safety.max_total_spend_inr, cart.total_payable,
+        cfg.safety.max_total_spend_inr, cart.total_payable, product.max_orders,
     )
     if not can_ord:
         return False, f"Ordering not permitted: {reason}"
@@ -284,7 +284,8 @@ def checkout(
     state_path: str = state.DEFAULT_PATH,
 ) -> CheckoutResult:
     """Cart page -> address -> payment page -> Cash on Delivery -> lock -> Pay Now."""
-    ok, why = state.can_order(current_state, product.id, cfg.safety.max_orders_total)
+    ok, why = state.can_order(current_state, product.id, cfg.safety.max_orders_total,
+                              max_orders=product.max_orders)
     if not ok:
         return CheckoutResult(success=False, error=f"Ordering not permitted: {why}")
     if not cart.success:

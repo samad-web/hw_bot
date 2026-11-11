@@ -372,7 +372,8 @@ def handle_restock(page: Any, cfg: Config, product: Any, bot_state: dict[str, An
         return bot_state, False
     if chk.success:
         notifier.send(
-            f"ORDER PLACED: {product.name} x{cart.quantity}\nOrder ID: {chk.order_id}\n"
+            f"ORDER PLACED ({state.order_count(bot_state, product.id)}/{product.max_orders}): "
+            f"{product.name} x{cart.quantity}\nOrder ID: {chk.order_id}\n"
             f"Cash on Delivery: keep Rs {cart.total_payable:.0f} ready for the rider.\n"
             f"Total ordered so far: Rs {bot_state.get('total_spent', 0):.0f}",
             cfg, priority=True)
@@ -423,13 +424,13 @@ def main(argv: list[str] | None = None) -> int:
         notifier.send(f"⚠️ {msg}", cfg, priority=True)
         return 1
 
-    if state.all_bought(bot_state, len(cfg.products)) and cfg.safety.stop_after_success:
+    if state.all_bought(bot_state, cfg.safety.max_orders_total) and cfg.safety.stop_after_success:
         logger.info("All %d targets already ordered. Nothing to do.", len(cfg.products))
         return 0
 
     # Startup greeting & self-test
     mode_desc = f"Mode {cfg.mode}" + (" (DRY RUN)" if args.dry_run else "")
-    remaining = [q for q in cfg.products if not state.is_bought(bot_state, q.id)]
+    remaining = [q for q in cfg.products if not state.is_bought(bot_state, q.id, q.max_orders)]
     target_lines = "\n".join(f"   - {q.name} (max Rs {q.max_price_inr:.0f})" for q in remaining)
     greeting = (
         f"Blinkit Hot Wheels Bot started\n"
@@ -531,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
                 now = time.time()
                 if now - last_heartbeat_ts >= cfg.reliability.heartbeat_hours * 3600:
                     last_heartbeat_ts = now
-                    pending = [q for q in cfg.products if not state.is_bought(bot_state, q.id)]
+                    pending = [q for q in cfg.products if not state.is_bought(bot_state, q.id, q.max_orders)]
                     notifier.send(
                         f"Heartbeat: watching {len(pending)} target(s), last check "
                         f"{bot_state.get('last_status', 'n/a')}. Bought "
@@ -540,7 +541,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
 
                 # 4. One pass over every target still outstanding.
-                targets = [q for q in cfg.products if not state.is_bought(bot_state, q.id)]
+                targets = [q for q in cfg.products if not state.is_bought(bot_state, q.id, q.max_orders)]
                 if not targets:
                     notifier.send(
                         f"All {len(cfg.products)} targets ordered. Total spent Rs "

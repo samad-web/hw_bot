@@ -9,12 +9,14 @@ products:
     name: "Hot Wheels Fast & Furious Edition Toyota Supra Die Cast Car"
     url: "https://blinkit.com/prn/x/prid/1454828"
     max_price_inr: 659        # listed Rs 549, +20% tolerance
-    quantity: 1               # one unit per order; repeats wait for delivery (D14)
+    quantity: 1               # one unit per order
+    max_orders: 3             # separate orders; the next once the previous is confirmed (D14)
   - id: "1416802"
     name: "Hot Wheels 23 Ram 1500 Die Cast Car"
     url: "https://blinkit.com/prn/hot-wheels-23-ram-1500-die-cast-car/prid/1416802"
     max_price_inr: 215        # listed Rs 179, +20% tolerance
     quantity: 1
+    max_orders: 3
 
 delivery:
   # Blinkit renders the saved address as a Plus Code plus area, e.g.
@@ -25,7 +27,7 @@ delivery:
   lng: 0.0
   pincode: "560035"           # not shown on the page; used only as a fallback match
 
-mode: "A"                     # A notify only | B cart + confirm | C full auto-order
+mode: "C"                     # A notify only | B cart + confirm | C full auto-order (COD)
 
 polling:
   interval_seconds: 60        # floor is 20s x number of targets = 40s
@@ -33,15 +35,15 @@ polling:
 
 payment:
   priority: ["cod"]           # web checkout has no Blinkit Money (D9)
-  max_order_value_inr: 700    # ceiling on any ONE order, incl. fees
+  max_order_value_inr: 750    # ceiling on any ONE order (1 unit), incl. fees
   otp_relay_timeout_seconds: 120
 
 safety:
-  max_orders_total: 2         # must equal the number of products
+  max_orders_total: 6         # must equal the sum of products' max_orders
   stop_after_success: true    # exit once every target is bought
-  # Hard ceiling on the SUM of all orders. Wallet holds Rs 800; both cars at
-  # listed price total Rs 728, leaving ~Rs 72 for two sets of delivery fees.
-  max_total_spend_inr: 800
+  # Backstop on the SUM of all orders (COD cash). 3 x 659 + 3 x 215 + fees;
+  # never blocks a legitimate order, catches a wrong price or a bug.
+  max_total_spend_inr: 3000
 
 reliability:
   recycle_hours: 6

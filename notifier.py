@@ -207,12 +207,14 @@ def handle_command(
         orders = current_state.get("orders") or {}
         lines = []
         for q in cfg.products:
-            rec = orders.get(q.id)
-            if rec:
-                lines.append(f"   BOUGHT {q.name} (order {rec.get('order_id')}, Rs {rec.get('spent', 0):.0f})")
+            n = state.order_count(current_state, q.id)
+            if n >= q.max_orders:
+                lines.append(f"   DONE {q.name}: {n}/{q.max_orders} ordered")
             else:
-                ok, why = state.can_order(current_state, q.id, cfg.safety.max_orders_total)
-                lines.append(f"   watching {q.name}" + ("" if ok else f" [BLOCKED: {why}]"))
+                ok, why = state.can_order(current_state, q.id, cfg.safety.max_orders_total,
+                                          max_orders=q.max_orders)
+                lines.append(f"   watching {q.name} ({n}/{q.max_orders} ordered)"
+                             + ("" if ok else f" [BLOCKED: {why}]"))
 
         cap = (f" of Rs {cfg.safety.max_total_spend_inr:.0f} cap"
                if cfg.safety.max_total_spend_inr else "")
@@ -220,7 +222,7 @@ def handle_command(
             "Bot Status",
             f"- Mode: {current_state.get('mode') or cfg.mode}",
             f"- Paused: {current_state.get('paused', False)}",
-            f"- Bought: {len(orders)}/{len(cfg.products)}, "
+            f"- Orders: {sum(len(v or []) for v in orders.values())}/{cfg.safety.max_orders_total}, "
             f"total Rs {current_state.get('total_spent', 0):.0f}{cap}",
             *lines,
             f"- Last check: {current_state.get('last_status', 'Never')}",

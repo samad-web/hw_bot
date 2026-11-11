@@ -49,6 +49,12 @@
 - **Documented fallback is the home machine** (PLAN.md risk table, D1). Hosting decision needs revisiting with the user.
 - Untested long shot: the second Mumbai box 1917148 (62.72.30.234) may sit in a different reputation range, but it runs the spaceair production apps.
 
+## 2026-11-12 — Live ordering decisions
+- **D14 repeat orders:** user wants up to 3 Supras + 3 Rams as separate 1-unit orders; the next is placed once the previous order is confirmed (not delivered), if still in stock. I flagged that Blinkit may cancel repeat orders / flag the account; user accepted.
+- Targets: Supra 1454828 (replaced K5 799027) + Ram 1416802. Caps: Rs 750/order, Rs 3000 total backstop (user: cash is not a limit).
+- User declined a supervised cheap real order; practice (dry run) passed instead. Post-Pay confirmation detection (URL leaves /checkout) is therefore unverified; failure leaves the uncertain lock -> bot stops + alerts, never double-orders.
+- Phone relay drops when Android sleeps Tailscale: user must set battery Unrestricted / Always-on VPN / Stay awake.
+
 ## 2026-11-11 — CORRECTION: Blinkit web CAN check out (supersedes 2026-11-07 below)
 Lead: open-source `hereisSwapnil/blinkit-mcp` (Playwright, Sept 2026) orders on web. Verified live, logged-in profile, never clicked Pay:
 - Cart is **client-side until checkout** (so no API call on Add — the 11-07 trace was read wrongly). It DOES survive reload ("2 items Rs 346").

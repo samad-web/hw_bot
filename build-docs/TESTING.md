@@ -103,3 +103,15 @@ started, fetched the K5 Blazer page, and the checker read the location bar as
 guessing at stock. Confirms `product_title`, `header_address` and the hydration
 wait work against the live site. The address subtitle is empty until a session
 with a saved address exists, which is the expected pre-login state.
+
+## 2026-11-12 — F10 home relay + F11 web COD checkout + repeat orders
+- Unit: 75 pass. New: browser_options env; nav failure skips stale DOM + one relay alert; COD dry run never pays; lock before Pay; COD disabled / Pay Now disabled / wrong address / no confirmation (lock stays) / missing selector (no lock); one unit per order; caps; grand-total parsing; repeat orders to max_orders; single-record state migration; config max_orders_total = sum.
+- Live gate (VPS via phone): egress = home Airtel IP; product page 200; `/checkout` payment iframe loads headful.
+- Live practice (`--practice 774429`, VPS via phone), failures found and fixed:
+  1. "Proceed" absent when the address is pre-chosen -> made optional.
+  2. empty_cart gave up before steppers hydrated -> loop until no lines.
+  3. Address hidden in mobile layout -> read text_content, not inner_text.
+  4. COD option loads after the iframe -> wait_for it.
+  5. Pay Now matched 11, then 2 (hidden copy) -> `Zpayments__Button ... :visible` = 1; must be enabled after COD.
+  Final: PRACTICE PASSED (cart Rs 185, address verified, COD selected, Pay Now enabled, not clicked, cart emptied).
+- NOT verified: post-Pay confirmation (no real order placed, user's choice). Failure mode is safe: lock stays, bot stops ordering and alerts.

@@ -102,14 +102,22 @@ def test_mode_c_requires_positive_spend_ceilings(tmp_path: Path):
         load_config(cfg_file2, env_path=tmp_path / ".env")
 
 
-def test_max_orders_total_must_equal_product_count(tmp_path: Path):
-    """Each target is bought at most once, so the two numbers cannot disagree."""
+def test_max_orders_total_must_equal_sum_of_max_orders(tmp_path: Path):
+    """The overall limit restates the per-product limits, so the two cannot disagree."""
     cfg_file = create_minimal_config(
         tmp_path / "config.yaml",
         safety={"max_orders_total": 2, "max_total_spend_inr": 800.0},
     )
-    with pytest.raises(ConfigError, match="must equal the number of products"):
+    with pytest.raises(ConfigError, match="must equal the sum"):
         load_config(cfg_file, env_path=tmp_path / ".env")
+
+    prod = {"id": "1", "name": "Hot Wheels A", "url": "https://blinkit.com/prn/x/prid/1",
+            "max_price_inr": 100.0, "max_orders": 3}
+    cfg_file = create_minimal_config(
+        tmp_path / "config.yaml", products=[prod],
+        safety={"max_orders_total": 3, "max_total_spend_inr": 800.0},
+    )
+    assert load_config(cfg_file, env_path=tmp_path / ".env").products[0].max_orders == 3
 
 
 def test_duplicate_product_id_rejected(tmp_path: Path):
@@ -231,5 +239,5 @@ def test_mode_c_rejects_wallet_payment(tmp_path: Path):
         selectors={"product_title": "h1", "header_address": ".addr",
                    "add_button": "button.add", "out_of_stock": ".oos"},
     )
-    with pytest.raises(ConfigError, match="only payment.priority: \[cod\]"):
+    with pytest.raises(ConfigError, match=r"only payment.priority: \[cod\]"):
         load_config(cfg_file, env_path=tmp_path / ".env")
