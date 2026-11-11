@@ -311,7 +311,9 @@ def checkout(
         page.locator(sel.proceed_to_pay).last.click()
         page.wait_for_selector(sel.payment_frame, timeout=45000)
         page.wait_for_timeout(4000)
-        m = re.search(r"Delivery Address(.{0,250})", page.inner_text("body"), re.S)
+        # text_content, not inner_text: the mobile layout hides the address block.
+        m = re.search(r"Delivery Address(.{0,250})",
+                      page.locator("body").text_content() or "", re.S)
         cart = dataclasses.replace(cart, delivery_address=m.group(1) if m else "")
     except Exception as exc:
         return CheckoutResult(success=False, error=f"Could not reach the payment page: {exc}")
@@ -323,14 +325,21 @@ def checkout(
 
     cod = page.frame_locator(sel.payment_frame).locator(sel.cod_option).first
     try:
-        if (cod.count() == 0 or cod.get_attribute("disabled") is not None
+        try:
+            cod.wait_for(state="attached", timeout=30000)  # the widget loads after the frame
+        except Exception:
+            return CheckoutResult(success=False, error="Payment options never loaded (no Cash option)")
+        if (cod.get_attribute("disabled") is not None
                 or cod.locator("[aria-disabled='true']").count() > 0):
             return CheckoutResult(success=False, error="Cash on Delivery is not offered for this order")
         cod.click()
         page.wait_for_timeout(2000)
-        pay = page.locator(sel.pay_button)
+        pay = page.locator(sel.pay_button).first
         if pay.count() == 0:
             return CheckoutResult(success=False, error="Pay Now button not found; refusing to pay.")
+        # Pay Now stays [disabled] until a method is chosen: enabled proves COD took.
+        if pay.get_attribute("disabled") is not None:
+            return CheckoutResult(success=False, error="Pay Now still disabled after choosing Cash")
     except Exception as exc:
         return CheckoutResult(success=False, error=f"Could not select Cash on Delivery: {exc}")
 
@@ -343,7 +352,7 @@ def checkout(
     current_state = state.save(current_state, state_path, payment_attempt_started=product.id)
     logger.info("Lock written and fsynced for product %s. Clicking Pay Now.", product.id)
     try:
-        pay.last.click()
+        pay.click()
         order_id = _await_confirmation(page, cfg)
     except Exception as exc:
         order_id = None

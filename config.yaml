@@ -95,9 +95,9 @@ selectors:
   checkout_button: 'text="Proceed"'
   payment_methods: ""
   wallet_balance: ""
-  # On the main page, not inside the iframe. Seen in page text; class unverified,
-  # so the practice run reports how many elements this matches.
-  pay_button: 'div:has-text("Pay Now"), button:has-text("Pay Now")'
+  # On the main page, not inside the iframe. Carries [disabled] until a payment
+  # method is chosen. Verified 2026-11-11.
+  pay_button: 'div[class*="Zpayments__Button"]:has-text("Pay Now"):visible'
   otp_input: ""
   order_confirmation: ""
   order_id: ""

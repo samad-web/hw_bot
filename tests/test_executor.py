@@ -78,14 +78,17 @@ def _good_cart(**kw) -> CartResult:
 def _cod_page(cfg, cod_disabled=False, address="Home: 206, 2nd floor, Mumbai 400001"):
     """A page already on the cart, whose checkout reaches a payment page with COD."""
     page = MagicMock()
-    page.inner_text.return_value = f"Select Payment Method | Delivery Address | {address} | Pay Now"
+    body = MagicMock()
+    body.text_content.return_value = f"Select Payment Method | Delivery Address | {address} | Pay Now"
     cod = page.frame_locator.return_value.locator.return_value.first
-    cod.count.return_value = 1
     cod.get_attribute.return_value = "" if cod_disabled else None
     cod.locator.return_value.count.return_value = 0
-    pay = MagicMock()
+    pay_loc = MagicMock()
+    pay = pay_loc.first
     pay.count.return_value = 1
-    page.locator.side_effect = lambda sel: pay if sel == cfg.selectors.pay_button else MagicMock()
+    pay.get_attribute.return_value = None  # enabled once COD is chosen
+    page.locator.side_effect = lambda sel: (
+        pay_loc if sel == cfg.selectors.pay_button else body if sel == "body" else MagicMock())
     page.url = "https://blinkit.com/order/12345678"
     return page, pay
 
@@ -96,7 +99,7 @@ def test_checkout_dry_run_never_pays(tmp_path: Path, mock_config: Config, target
     res = checkout(page, mock_config, target, _good_cart(), state.load(state_file),
                    dry_run=True, state_path=str(state_file))
     assert res.success and res.dry_run and res.payment_method == "cod"
-    pay.last.click.assert_not_called()
+    pay.click.assert_not_called()
     on_disk = state.load(state_file)
     assert on_disk["payment_attempt_started"] is None and on_disk["orders"] == {}
 
@@ -105,7 +108,7 @@ def test_checkout_lock_written_before_pay(tmp_path: Path, mock_config: Config, t
     state_file = tmp_path / "state.json"
     page, pay = _cod_page(mock_config)
     seen = []
-    pay.last.click.side_effect = lambda *a, **k: seen.append(
+    pay.click.side_effect = lambda *a, **k: seen.append(
         state.load(state_file).get("payment_attempt_started"))
 
     res = checkout(page, mock_config, target, _good_cart(), state.load(state_file),
@@ -124,7 +127,7 @@ def test_cod_unavailable_aborts_without_lock(tmp_path: Path, mock_config: Config
     res = checkout(page, mock_config, target, _good_cart(), state.load(state_file),
                    dry_run=False, state_path=str(state_file))
     assert not res.success and "Cash on Delivery" in res.error
-    pay.last.click.assert_not_called()
+    pay.click.assert_not_called()
     assert state.load(state_file)["payment_attempt_started"] is None
 
 
@@ -135,7 +138,7 @@ def test_wrong_delivery_address_aborts_before_cod(tmp_path: Path, mock_config: C
                    dry_run=False, state_path=str(state_file))
     assert not res.success and "address" in res.error.lower()
     page.frame_locator.assert_not_called()
-    pay.last.click.assert_not_called()
+    pay.click.assert_not_called()
 
 
 def test_missing_pay_button_does_not_write_the_lock(tmp_path: Path, mock_config: Config, target):
@@ -167,7 +170,7 @@ def test_no_confirmation_leaves_uncertain_lock(tmp_path: Path, mock_config: Conf
     res = checkout(page, mock_config, target, _good_cart(), state.load(state_file),
                    dry_run=False, state_path=str(state_file))
     assert not res.success and "UNCERTAIN" in res.error
-    pay.last.click.assert_called_once()
+    pay.click.assert_called_once()
     on_disk = state.load(state_file)
     assert on_disk["payment_attempt_started"] == target.id
     assert state.can_order(on_disk, target.id, 1)[0] is False
@@ -205,3 +208,15 @@ def test_grand_total_parsing():
     assert executor._grand_total("Proceed | ₹352\nTOTAL | Proceed") == 352
     assert executor._grand_total("Grand total ⓘ\n₹1,300\n") == 1300
     assert executor._grand_total("nothing here") == 0
+
+
+def test_pay_now_still_disabled_aborts_without_lock(tmp_path: Path, mock_config: Config, target):
+    """If Pay Now stays disabled, Cash was not really selected: never pay."""
+    state_file = tmp_path / "state.json"
+    page, pay = _cod_page(mock_config)
+    pay.get_attribute.return_value = ""
+    res = checkout(page, mock_config, target, _good_cart(), state.load(state_file),
+                   dry_run=False, state_path=str(state_file))
+    assert not res.success and "disabled" in res.error
+    pay.click.assert_not_called()
+    assert state.load(state_file)["payment_attempt_started"] is None
