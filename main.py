@@ -575,7 +575,9 @@ def main(argv: list[str] | None = None) -> int:
                                  if os.environ.get("BROWSER_PROXY") else
                                  "Cannot reach Blinkit (network down?). ")
                                 + "Not watching until it is back.", cfg, priority=True)
-                        time.sleep(hardening.next_delay(cons))
+                        # Fixed 60s, not the growing backoff: a dead relay never reaches
+                        # Blinkit, and a 15-min wait after it returns could miss a restock.
+                        time.sleep(hardening.next_delay(1))
                         continue
                     if relay_down:
                         relay_down = False
