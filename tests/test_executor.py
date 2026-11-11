@@ -68,133 +68,140 @@ def test_validate_cart_address_mismatch(mock_config: Config, target):
     assert "Cart address" in reason
 
 
+def _good_cart(**kw) -> CartResult:
+    base = dict(success=True, item_name="Hot Wheels Nissan Skyline GT-R", unit_price=150.0,
+                quantity=1, total_payable=180.0)
+    base.update(kw)
+    return CartResult(**base)
+
+
+def _cod_page(cfg, cod_disabled=False, address="Home: 206, 2nd floor, Mumbai 400001"):
+    """A page already on the cart, whose checkout reaches a payment page with COD."""
+    page = MagicMock()
+    page.inner_text.return_value = f"Select Payment Method | Delivery Address | {address} | Pay Now"
+    cod = page.frame_locator.return_value.locator.return_value.first
+    cod.count.return_value = 1
+    cod.get_attribute.return_value = "" if cod_disabled else None
+    cod.locator.return_value.count.return_value = 0
+    pay = MagicMock()
+    pay.count.return_value = 1
+    page.locator.side_effect = lambda sel: pay if sel == cfg.selectors.pay_button else MagicMock()
+    page.url = "https://blinkit.com/order/12345678"
+    return page, pay
+
+
 def test_checkout_dry_run_never_pays(tmp_path: Path, mock_config: Config, target):
     state_file = tmp_path / "state.json"
-    s = state.load(state_file)
-
-    cart = CartResult(
-        success=True,
-        item_name="Hot Wheels Nissan Skyline GT-R",
-        unit_price=150.0,
-        quantity=1,
-        delivery_address="Home - 400001",
-        total_payable=180.0,
-    )
-
-    mock_page = MagicMock()
-    mock_wallet = MagicMock()
-    mock_wallet.inner_text.return_value = "₹500.00"
-    mock_page.query_selector.return_value = mock_wallet
-
-    res = checkout(mock_page, mock_config, target, cart, s, dry_run=True, state_path=str(state_file))
-    assert res.success is True
-    assert res.dry_run is True
-
-    # Lock must NOT have been written
-    s_loaded = state.load(state_file)
-    assert s_loaded["payment_attempt_started"] is None
-    assert s_loaded["orders"] == {}
-    # Pay button must not have been clicked
-    assert mock_page.click.call_count == 1  # Only clicked checkout button
+    page, pay = _cod_page(mock_config)
+    res = checkout(page, mock_config, target, _good_cart(), state.load(state_file),
+                   dry_run=True, state_path=str(state_file))
+    assert res.success and res.dry_run and res.payment_method == "cod"
+    pay.last.click.assert_not_called()
+    on_disk = state.load(state_file)
+    assert on_disk["payment_attempt_started"] is None and on_disk["orders"] == {}
 
 
 def test_checkout_lock_written_before_pay(tmp_path: Path, mock_config: Config, target):
     state_file = tmp_path / "state.json"
-    s = state.load(state_file)
+    page, pay = _cod_page(mock_config)
+    seen = []
+    pay.last.click.side_effect = lambda *a, **k: seen.append(
+        state.load(state_file).get("payment_attempt_started"))
 
-    cart = CartResult(
-        success=True,
-        item_name="Hot Wheels Nissan Skyline GT-R",
-        unit_price=150.0,
-        quantity=1,
-        delivery_address="Home - 400001",
-        total_payable=180.0,
-    )
+    res = checkout(page, mock_config, target, _good_cart(), state.load(state_file),
+                   dry_run=False, state_path=str(state_file))
 
-    mock_page = MagicMock()
-    mock_wallet = MagicMock()
-    mock_wallet.inner_text.return_value = "₹500.00"
-    mock_order_id = MagicMock()
-    mock_order_id.inner_text.return_value = "ORD-TEST-999"
-
-    def mock_query(sel):
-        if sel == "span.wallet-bal":
-            return mock_wallet
-        if sel == "span.order-id":
-            return mock_order_id
-        return MagicMock()
-
-    mock_page.query_selector.side_effect = mock_query
-
-    # Track when payment_attempt_started was set
-    observed_lock_during_pay = []
-
-    def mock_click(sel):
-        if sel == "button.pay-btn":
-            # Check state file on disk right when pay is clicked
-            cur = state.load(state_file)
-            observed_lock_during_pay.append(cur.get("payment_attempt_started"))
-
-    mock_page.click.side_effect = mock_click
-
-    res = checkout(mock_page, mock_config, target, cart, s, dry_run=False, state_path=str(state_file))
-    assert res.success is True
-    assert res.order_id == "ORD-TEST-999"
-
-    # Crucial assertion: the lock named THIS product on disk at the pay click.
-    assert observed_lock_during_pay == [target.id]
-
-    # After completion the target is recorded as bought
-    final_s = state.load(state_file)
-    assert target.id in final_s["orders"]
-    assert final_s["orders"][target.id]["order_id"] == "ORD-TEST-999"
-    assert final_s["payment_attempt_started"] is None
+    assert res.success and res.order_id == "12345678" and res.payment_method == "cod"
+    assert seen == [target.id], "lock must name this product on disk at the Pay click"
+    final = state.load(state_file)
+    assert final["orders"][target.id]["order_id"] == "12345678"
+    assert final["payment_attempt_started"] is None
 
 
-def _good_cart() -> CartResult:
-    return CartResult(
-        success=True,
-        item_name="Hot Wheels Nissan Skyline GT-R",
-        unit_price=150.0,
-        quantity=1,
-        delivery_address="Home - 400001",
-        total_payable=180.0,
-    )
+def test_cod_unavailable_aborts_without_lock(tmp_path: Path, mock_config: Config, target):
+    state_file = tmp_path / "state.json"
+    page, pay = _cod_page(mock_config, cod_disabled=True)
+    res = checkout(page, mock_config, target, _good_cart(), state.load(state_file),
+                   dry_run=False, state_path=str(state_file))
+    assert not res.success and "Cash on Delivery" in res.error
+    pay.last.click.assert_not_called()
+    assert state.load(state_file)["payment_attempt_started"] is None
+
+
+def test_wrong_delivery_address_aborts_before_cod(tmp_path: Path, mock_config: Config, target):
+    state_file = tmp_path / "state.json"
+    page, pay = _cod_page(mock_config, address="Office: 12 MG Road, Chennai 600028")
+    res = checkout(page, mock_config, target, _good_cart(), state.load(state_file),
+                   dry_run=False, state_path=str(state_file))
+    assert not res.success and "address" in res.error.lower()
+    page.frame_locator.assert_not_called()
+    pay.last.click.assert_not_called()
 
 
 def test_missing_pay_button_does_not_write_the_lock(tmp_path: Path, mock_config: Config, target):
-    """Regression: the lock was written before the pay_button selector was checked,
-    so a config mistake left the bot in the uncertain state and it refused to start."""
+    """Regression: a config mistake must fail before the lock, never leave it set."""
     import dataclasses
-
     cfg = dataclasses.replace(
-        mock_config,
-        selectors=dataclasses.replace(mock_config.selectors, pay_button=""),
-    )
+        mock_config, selectors=dataclasses.replace(mock_config.selectors, pay_button=""))
     state_file = tmp_path / "state.json"
-    s = dict(state.DEFAULTS)
-
     page = MagicMock()
-    page.query_selector.return_value = None  # no wallet balance element -> method still selected
-
-    res = checkout(page, cfg, target, _good_cart(), s, dry_run=False, state_path=str(state_file))
-
-    assert res.success is False
-    assert "pay_button" in res.error
-    page.click.assert_called_once()  # only the checkout button, never pay
+    res = checkout(page, cfg, target, _good_cart(), dict(state.DEFAULTS),
+                   dry_run=False, state_path=str(state_file))
+    assert not res.success and "pay_button" in res.error
+    page.locator.assert_not_called()
     on_disk = state.load(state_file)
     assert on_disk["payment_attempt_started"] is None
     assert state.can_order(on_disk, target.id, 1)[0] is True
+
+
+def test_no_confirmation_leaves_uncertain_lock(tmp_path: Path, mock_config: Config, target):
+    """Pay clicked but success never seen: the lock stays so the bot never re-orders."""
+    state_file = tmp_path / "state.json"
+    page, pay = _cod_page(mock_config)
+
+    def wait(sel, **kw):
+        if sel == mock_config.selectors.order_confirmation:
+            raise TimeoutError("no confirmation")
+    page.wait_for_selector.side_effect = wait
+
+    res = checkout(page, mock_config, target, _good_cart(), state.load(state_file),
+                   dry_run=False, state_path=str(state_file))
+    assert not res.success and "UNCERTAIN" in res.error
+    pay.last.click.assert_called_once()
+    on_disk = state.load(state_file)
+    assert on_disk["payment_attempt_started"] == target.id
+    assert state.can_order(on_disk, target.id, 1)[0] is False
 
 
 def test_uncertain_state_blocks_a_second_checkout(tmp_path: Path, mock_config: Config, target):
     """After a payment whose outcome is unknown, no retry may happen without a human."""
     s = dict(state.DEFAULTS, payment_attempt_started="999", orders={})
     page = MagicMock()
-
     res = checkout(page, mock_config, target, _good_cart(), s, dry_run=False,
                    state_path=str(tmp_path / "state.json"))
+    assert not res.success and "never confirmed" in res.error
+    page.locator.assert_not_called()
 
-    assert res.success is False
-    assert "never confirmed" in res.error
-    page.click.assert_not_called()
+
+def test_one_unit_per_order(mock_config: Config, target):
+    """D14: one unit per order; a leftover second unit must be refused, not bought."""
+    ok, why = validate_cart(_good_cart(quantity=2, delivery_address="Home - 400001"),
+                            mock_config, target, dict(state.DEFAULTS))
+    assert not ok and "quantity" in why.lower()
+
+
+def test_target_quantity_respects_spend_caps(mock_config: Config):
+    supra = ProductConfig(id="1454828", name="Supra", max_price_inr=659, quantity=1)
+    assert executor.target_quantity(549, supra, mock_config, dict(state.DEFAULTS)) == 0  # 300 cap
+    import dataclasses
+    cfg = dataclasses.replace(mock_config, payment=PaymentConfig(max_order_value_inr=700))
+    assert executor.target_quantity(549, supra, cfg, dict(state.DEFAULTS)) == 1
+    spent = dict(state.DEFAULTS, total_spent=300)  # 800 - 300 = 500 left < 549 + fees
+    assert executor.target_quantity(549, supra, cfg, spent) == 0
+    assert executor.target_quantity(0, supra, cfg, dict(state.DEFAULTS)) == 0
+
+
+def test_grand_total_parsing():
+    assert executor._grand_total("Proceed | ₹352\nTOTAL | Proceed") == 352
+    assert executor._grand_total("Grand total ⓘ\n₹1,300\n") == 1300
+    assert executor._grand_total("nothing here") == 0

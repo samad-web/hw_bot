@@ -1,11 +1,13 @@
 """Executor module for cart automation (Mode B) and checkout/payment (Mode C).
 
-Enforces strict pre-checkout validation, safe payment method selection,
-and the single-order lock sequence before any payment click.
+Web flow (F11): product page Add -> /cart (foreign lines removed, exactly one
+unit) -> address -> payment page -> Cash on Delivery -> single-order lock ->
+Pay Now. One unit per order; repeat orders wait for delivery (D14). Every safety gate runs before the lock is written.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 import time
@@ -17,6 +19,13 @@ import state
 from config import Config, ProductConfig
 
 logger = logging.getLogger("hw_bot")
+
+CART_URL = "https://blinkit.com/cart"
+STEP_WAIT_MS = 2500
+# Handling + small-cart/delivery fees Blinkit adds on top of the items. Reserved
+# when deciding how many units fit under the money caps; the real grand total is
+# re-checked against the caps before paying.
+FEE_BUFFER_INR = 60
 
 
 @dataclass(frozen=True)
@@ -71,8 +80,8 @@ def validate_cart(cart: CartResult, cfg: Config, product: ProductConfig,
     if cart.has_extra_items:
         return False, "Cart contains unexpected items. Refusing to checkout foreign items."
 
-    if cart.quantity != product.quantity:
-        return False, f"Cart quantity ({cart.quantity}) does not match expected ({product.quantity})"
+    if not 1 <= cart.quantity <= product.quantity:
+        return False, f"Cart quantity ({cart.quantity}) outside 1..{product.quantity}"
 
     # Price ceilings
     if product.max_price_inr > 0 and cart.unit_price > product.max_price_inr:
@@ -112,90 +121,157 @@ def validate_cart(cart: CartResult, cfg: Config, product: ProductConfig,
     return True, ""
 
 
-def add_to_cart(page: Any, cfg: Config, product: ProductConfig) -> CartResult:
-    """Add ``product`` to the cart and read back the values Mode C will validate."""
-    selectors = cfg.selectors
-    if not selectors.add_button:
-        return CartResult(success=False, error="Selector 'add_button' is not configured")
+def _js_click(locator: Any) -> None:
+    # Cart steppers report "outside of the viewport" to a normal click.
+    locator.evaluate("el => el.click()")
 
+
+def _line_qty(line: Any, sel: Any) -> int:
+    """Quantity of one cart line: the bare text node inside the stepper. The +/-
+    icons are font glyphs that render as digits, so never regex the whole box."""
     try:
-        # The app-download overlay swallows clicks; clear it before touching
-        # anything, not just before reading.
-        checker.dismiss_interstitials(page, cfg)
+        txt = line.locator(sel.quantity_stepper).first.evaluate(
+            "el => [...el.childNodes].filter(n => n.nodeType === 3)"
+            ".map(n => n.textContent).join('')")
+        return int(re.sub(r"\D", "", txt) or 0)
+    except Exception:
+        return 0
 
-        # Check if button is visible
-        if not page.is_visible(selectors.add_button):
-            # Check if sold out in the meantime
-            if selectors.out_of_stock and page.is_visible(selectors.out_of_stock):
+
+def _grand_total(body: str) -> float:
+    """Grand total from the cart page text (bottom bar '₹352 TOTAL', else the bill)."""
+    m = (re.search(r"₹\s*([\d,]+(?:\.\d+)?)\s*TOTAL", body)
+         or re.search(r"Grand total\D{0,6}?₹\s*([\d,]+(?:\.\d+)?)", body))
+    return float(m.group(1).replace(",", "")) if m else 0.0
+
+
+def _title_matches(title: str, product: ProductConfig) -> bool:
+    a, b = title.strip().lower(), product.name.strip().lower()
+    return bool(a) and (a in b or b in a)
+
+
+def target_quantity(unit_price: float, product: ProductConfig, cfg: Config,
+                    current_state: dict[str, Any]) -> int:
+    """Units to buy: product.quantity, cut down to what the money caps allow."""
+    if unit_price <= 0:
+        return 0
+    budgets = []
+    if cfg.payment.max_order_value_inr > 0:
+        budgets.append(cfg.payment.max_order_value_inr)
+    if cfg.safety.max_total_spend_inr > 0:
+        budgets.append(cfg.safety.max_total_spend_inr
+                       - float(current_state.get("total_spent") or 0))
+    qty = product.quantity
+    if budgets:
+        qty = min(qty, int((min(budgets) - FEE_BUFFER_INR) // unit_price))
+    return max(qty, 0)
+
+
+def open_cart(page: Any, cfg: Config) -> None:
+    page.goto(CART_URL, wait_until="domcontentloaded", timeout=60000)
+    try:
+        page.wait_for_selector(cfg.selectors.cart_items, timeout=15000)
+    except Exception:
+        pass  # an empty cart redirects to the home page and has no lines
+
+
+def empty_cart(page: Any, cfg: Config) -> bool:
+    """Remove everything from the cart. True when no cart line is left."""
+    open_cart(page, cfg)
+    for _ in range(40):
+        if page.locator(cfg.selectors.cart_items).count() == 0:
+            return True
+        # Lines render before their steppers hydrate: no minus yet means wait.
+        minus = page.locator(cfg.selectors.cart_minus)
+        if minus.count():
+            _js_click(minus.first)
+        page.wait_for_timeout(STEP_WAIT_MS)
+    return page.locator(cfg.selectors.cart_items).count() == 0
+
+
+def add_to_cart(page: Any, cfg: Config, product: ProductConfig,
+                current_state: dict[str, Any]) -> CartResult:
+    """From the product page: Add, open the cart, drop foreign lines, keep one
+    unit, then read back what checkout will validate."""
+    sel = cfg.selectors
+    if not sel.add_button:
+        return CartResult(success=False, error="Selector 'add_button' is not configured")
+    try:
+        # The app-download overlay swallows clicks; clear it first.
+        checker.dismiss_interstitials(page, cfg)
+        if not page.is_visible(sel.add_button):
+            if sel.out_of_stock and page.is_visible(sel.out_of_stock):
                 return CartResult(success=False, missed=True, error="Product sold out before Add click")
             return CartResult(success=False, error="Add button not visible on page")
 
-        # Click Add button
-        page.click(selectors.add_button)
+        el = page.query_selector(sel.bar_price) if sel.bar_price else None
+        unit_price = _parse_currency(el.inner_text() or "") if el else 0.0
+        fits = target_quantity(unit_price, product, cfg, current_state)
+        if fits < 1:
+            return CartResult(success=False, unit_price=unit_price, error=(
+                f"Unit price Rs {unit_price:.0f} leaves no room under the spend caps"
+                if unit_price else "Could not read the unit price"))
 
-        # Wait for stepper or confirmation
-        if selectors.quantity_stepper:
-            try:
-                page.wait_for_selector(selectors.quantity_stepper, timeout=4000)
-            except Exception:
-                logger.warning("Quantity stepper did not appear immediately after click")
+        page.click(sel.add_button)
+        page.wait_for_timeout(STEP_WAIT_MS)
+        open_cart(page, cfg)
 
-        # Open cart
-        if selectors.cart_open and page.is_visible(selectors.cart_open):
-            page.click(selectors.cart_open)
+        # Leftovers from earlier sessions must never ride along: remove every
+        # line that is not the target before touching quantities.
+        for _ in range(40):
+            lines = page.locator(sel.cart_items)
+            foreign = [lines.nth(i) for i in range(lines.count())
+                       if not _title_matches(
+                           lines.nth(i).locator(sel.cart_line_title).first.inner_text(), product)]
+            if not foreign:
+                break
+            _js_click(foreign[0].locator(sel.cart_minus).first)
+            page.wait_for_timeout(STEP_WAIT_MS)
 
-        # Read back cart data
-        item_name = ""
-        if selectors.product_title:
-            el = page.query_selector(selectors.product_title)
-            if el:
-                item_name = (el.inner_text() or "").strip()
-
-        unit_price = 0.0
-        total_payable = 0.0
-        if selectors.cart_total:
-            el = page.query_selector(selectors.cart_total)
-            if el:
-                total_payable = _parse_currency(el.inner_text() or "")
-                unit_price = total_payable  # fallback for single item
-
-        cart_address = ""
-        if selectors.cart_address:
-            el = page.query_selector(selectors.cart_address)
-            if el:
-                cart_address = (el.inner_text() or "").strip()
-        elif selectors.header_address:
-            el = page.query_selector(selectors.header_address)
-            if el:
-                cart_address = (el.inner_text() or "").strip()
-
-        quantity = 1
-        if selectors.quantity_stepper:
-            el = page.query_selector(selectors.quantity_stepper)
-            if el:
-                match = re.search(r"\d+", el.inner_text() or "")
-                if match:
-                    quantity = int(match.group(0))
-
-        # Check for unexpected extra items
-        has_extra_items = False
-        if selectors.cart_items:
-            items = page.query_selector_all(selectors.cart_items)
-            if len(items) > 1:
-                has_extra_items = True
-
+        lines = page.locator(sel.cart_items)
+        n = lines.count()
+        if n == 0:
+            return CartResult(success=False, missed=True, unit_price=unit_price,
+                              error="Cart is empty after Add (sold out in the meantime?)")
+        line = lines.first
+        # A unit left over from an earlier failed attempt would make this 2.
+        for _ in range(10):
+            if _line_qty(line, sel) <= 1:
+                break
+            _js_click(line.locator(sel.cart_minus).first)
+            page.wait_for_timeout(STEP_WAIT_MS)
         return CartResult(
             success=True,
-            item_name=item_name or product.name,
+            item_name=line.locator(sel.cart_line_title).first.inner_text().strip(),
             unit_price=unit_price,
-            quantity=quantity,
-            delivery_address=cart_address,
-            total_payable=total_payable,
-            has_extra_items=has_extra_items,
+            # Read back, not assumed: a leftover unit of the same car would make it 2,
+            # and validate_cart then refuses (one unit per order, D14).
+            quantity=_line_qty(line, sel),
+            total_payable=_grand_total(page.inner_text("body")),
+            has_extra_items=n > 1,
         )
-
     except Exception as exc:
         return CartResult(success=False, error=f"Exception during add_to_cart: {exc}")
+
+
+def _await_confirmation(page: Any, cfg: Config) -> Optional[str]:
+    """After Pay Now: the order id, or None when success could not be seen.
+
+    shortcut: success = the page leaves /checkout (and not back to /cart) within
+    60s; unverified until the first real order. None keeps the lock (uncertain
+    state), so the bot alerts and never orders twice.
+    """
+    sel = cfg.selectors
+    try:
+        if sel.order_confirmation:
+            page.wait_for_selector(sel.order_confirmation, timeout=60000)
+        else:
+            page.wait_for_url(lambda u: "/checkout" not in u and "/cart" not in u,
+                              timeout=60000)
+    except Exception:
+        return None
+    m = re.search(r"(\d{6,})", page.url)
+    return m.group(1) if m else f"ORD-{int(time.time())}"
 
 
 def checkout(
@@ -207,113 +283,75 @@ def checkout(
     dry_run: bool = False,
     state_path: str = state.DEFAULT_PATH,
 ) -> CheckoutResult:
-    """Execute pre-checkout validation, method selection, lock write, and payment."""
-    # 1. Pre-checkout validation
-    is_valid, reason = validate_cart(cart, cfg, product, current_state)
-    if not is_valid:
+    """Cart page -> address -> payment page -> Cash on Delivery -> lock -> Pay Now."""
+    ok, why = state.can_order(current_state, product.id, cfg.safety.max_orders_total)
+    if not ok:
+        return CheckoutResult(success=False, error=f"Ordering not permitted: {why}")
+    if not cart.success:
+        return CheckoutResult(success=False, error=f"Cart preparation failed: {cart.error}")
+    sel = cfg.selectors
+    # Everything that can fail without spending money fails BEFORE the lock.
+    for name in ("checkout_button", "proceed_to_pay", "payment_frame", "cod_option", "pay_button"):
+        if not getattr(sel, name):
+            return CheckoutResult(success=False, error=(
+                f"Selector '{name}' is not configured; refusing to start a payment."))
+
+    try:
+        # "Proceed" + address sheet appear only when no address is chosen yet;
+        # otherwise the cart goes straight to "Proceed To Pay". The address is
+        # verified on the payment page either way.
+        proceed = page.locator(sel.checkout_button)
+        if proceed.count():
+            proceed.last.click()
+            page.wait_for_timeout(3000)
+        addr = page.get_by_text(cfg.delivery.pincode)
+        if addr.count():
+            addr.first.click()  # address sheet: never guess, pick by pincode
+            page.wait_for_timeout(4000)
+        page.locator(sel.proceed_to_pay).last.click()
+        page.wait_for_selector(sel.payment_frame, timeout=45000)
+        page.wait_for_timeout(4000)
+        m = re.search(r"Delivery Address(.{0,250})", page.inner_text("body"), re.S)
+        cart = dataclasses.replace(cart, delivery_address=m.group(1) if m else "")
+    except Exception as exc:
+        return CheckoutResult(success=False, error=f"Could not reach the payment page: {exc}")
+
+    valid, reason = validate_cart(cart, cfg, product, current_state)
+    if not valid:
         logger.error("Pre-checkout validation failed: %s", reason)
         return CheckoutResult(success=False, error=reason)
 
-    selectors = cfg.selectors
-    if not selectors.checkout_button:
-        return CheckoutResult(success=False, error="Selector 'checkout_button' is not configured")
-
-    # Navigate to checkout screen
+    cod = page.frame_locator(sel.payment_frame).locator(sel.cod_option).first
     try:
-        page.click(selectors.checkout_button)
+        if (cod.count() == 0 or cod.get_attribute("disabled") is not None
+                or cod.locator("[aria-disabled='true']").count() > 0):
+            return CheckoutResult(success=False, error="Cash on Delivery is not offered for this order")
+        cod.click()
+        page.wait_for_timeout(2000)
+        pay = page.locator(sel.pay_button)
+        if pay.count() == 0:
+            return CheckoutResult(success=False, error="Pay Now button not found; refusing to pay.")
     except Exception as exc:
-        return CheckoutResult(success=False, error=f"Failed to click checkout button: {exc}")
+        return CheckoutResult(success=False, error=f"Could not select Cash on Delivery: {exc}")
 
-    # 2. Payment method selection
-    selected_method = None
-    for method in cfg.payment.priority:
-        if method == "blinkit_wallet":
-            # Check wallet balance if selector configured
-            if selectors.wallet_balance:
-                el = page.query_selector(selectors.wallet_balance)
-                if el:
-                    balance = _parse_currency(el.inner_text() or "")
-                    if balance < cart.total_payable:
-                        logger.warning(
-                            "Wallet balance (₹%.2f) is less than order total (₹%.2f)",
-                            balance,
-                            cart.total_payable,
-                        )
-                        continue
-            selected_method = "blinkit_wallet"
-            break
-
-        elif method == "cod":
-            # Check if COD option is visible and enabled
-            if selectors.payment_methods:
-                el = page.query_selector(selectors.payment_methods)
-                if el and "cod" in (el.inner_text() or "").lower():
-                    selected_method = "cod"
-                    break
-
-        elif method == "saved_card_otp_relay":
-            selected_method = "saved_card_otp_relay"
-            break
-
-    if not selected_method:
-        return CheckoutResult(
-            success=False,
-            error="No eligible payment method with sufficient balance available",
-        )
-
-    # 3. Dry run check
     if dry_run:
-        logger.info(
-            "[DRY RUN] Mode C checkout ready: method='%s', total=₹%.2f, item='%s'. Halting before pay click.",
-            selected_method,
-            cart.total_payable,
-            cart.item_name,
-        )
-        return CheckoutResult(
-            success=True,
-            dry_run=True,
-            payment_method=selected_method,
-        )
+        logger.info("[DRY RUN] COD ready: %s x%d, total Rs %.0f. Halting before Pay Now.",
+                    cart.item_name, cart.quantity, cart.total_payable)
+        return CheckoutResult(success=True, dry_run=True, payment_method="cod")
 
-    # Everything that can fail without spending money must fail BEFORE the lock is
-    # written, otherwise a config mistake leaves the bot in the uncertain state and
-    # it refuses to start until a human clears it.
-    if not selectors.pay_button:
-        return CheckoutResult(
-            success=False,
-            error="Selector 'pay_button' is not configured; refusing to start a payment.",
-        )
-
-    # 4. SINGLE-ORDER LOCK SEQUENCE: Atomic write and fsync BEFORE pay click
+    # SINGLE-ORDER LOCK: written and fsynced BEFORE the pay click.
     current_state = state.save(current_state, state_path, payment_attempt_started=product.id)
-    logger.info("Lock written and fsynced for product %s. Proceeding to pay click.", product.id)
-
+    logger.info("Lock written and fsynced for product %s. Clicking Pay Now.", product.id)
     try:
-        # Click pay
-        page.click(selectors.pay_button)
-
-        # Wait for confirmation screen
-        order_id = None
-        if selectors.order_confirmation:
-            page.wait_for_selector(selectors.order_confirmation, timeout=30000)
-            if selectors.order_id:
-                el = page.query_selector(selectors.order_id)
-                if el:
-                    order_id = (el.inner_text() or "").strip()
-
-        # Mark this target bought and clear the in-flight flag, atomically.
-        order_id = order_id or f"ORD-{int(time.time())}"
-        state.record_order(current_state, product.id, order_id, cart.total_payable, state_path)
-        return CheckoutResult(
-            success=True,
-            order_id=order_id,
-            payment_method=selected_method,
-        )
-
+        pay.last.click()
+        order_id = _await_confirmation(page, cfg)
     except Exception as exc:
-        logger.critical("Payment step encountered error: %s. Order status uncertain!", exc)
-        return CheckoutResult(
-            success=False,
-            payment_method=selected_method,
-            error=f"Payment execution error: {exc}",
-        )
+        order_id = None
+        logger.critical("Pay Now step raised: %s", exc)
+    if order_id is None:
+        logger.critical("Pay Now clicked but no confirmation seen. Order status uncertain!")
+        return CheckoutResult(success=False, payment_method="cod", error=(
+            "Pay Now was clicked but no confirmation was seen. Order status UNCERTAIN: "
+            "check Blinkit orders. The bot will not order this item again on its own."))
+    state.record_order(current_state, product.id, order_id, cart.total_payable, state_path)
+    return CheckoutResult(success=True, order_id=order_id, payment_method="cod")

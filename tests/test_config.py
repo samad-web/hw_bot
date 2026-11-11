@@ -27,7 +27,7 @@ def create_minimal_config(path: Path, **overrides) -> Path:
             "jitter_seconds": 15,
         },
         "payment": {
-            "priority": ["blinkit_wallet"],
+            "priority": ["cod"],
             "max_order_value_inr": 300.0,
             "otp_relay_timeout_seconds": 120,
         },
@@ -220,4 +220,16 @@ def test_mode_c_requires_checkout_selectors(tmp_path: Path):
         },
     )
     with pytest.raises(ConfigError, match="Mode C requires these selectors"):
+        load_config(cfg_file, env_path=tmp_path / ".env")
+
+
+def test_mode_c_rejects_wallet_payment(tmp_path: Path):
+    """F11/D9: web checkout has no Blinkit Money, so Mode C must be COD-only."""
+    cfg_file = create_minimal_config(
+        tmp_path / "config.yaml", mode="C",
+        payment={"priority": ["blinkit_wallet"], "max_order_value_inr": 300.0},
+        selectors={"product_title": "h1", "header_address": ".addr",
+                   "add_button": "button.add", "out_of_stock": ".oos"},
+    )
+    with pytest.raises(ConfigError, match="only payment.priority: \[cod\]"):
         load_config(cfg_file, env_path=tmp_path / ".env")

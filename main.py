@@ -12,6 +12,7 @@ import json
 import dataclasses
 import logging
 import signal
+import tempfile
 import sys
 import time
 from pathlib import Path
@@ -115,6 +116,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Write session.json (portable cookies+localStorage) from the local profile")
     parser.add_argument("--import-session", action="store_true",
                         help="Load session.json into this machine's profile, then exit")
+    parser.add_argument("--practice", metavar="PRID",
+                        help="Dry-run the full COD checkout on an in-stock product "
+                             "(stops before Pay Now, then empties the cart)")
     return parser.parse_args(argv)
 
 
@@ -283,6 +287,43 @@ def run_capture_flow(cfg: Config, profile_dir: Path = DEFAULT_PROFILE_DIR) -> in
     return 1
 
 
+def run_practice_flow(cfg: Config, prid: str, profile_dir: Path = DEFAULT_PROFILE_DIR) -> int:
+    """Dry-run the whole COD checkout on an in-stock product. Never presses Pay Now,
+    writes no state, and empties the cart afterwards."""
+    url = f"https://blinkit.com/prn/x/prid/{prid}"
+    scratch_state = str(Path(tempfile.gettempdir()) / "hw_practice_state.json")
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir), **browser_options())
+        page = context.new_page()
+        ok = False
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_selector(cfg.selectors.add_button, timeout=30000)
+            title = page.inner_text(cfg.selectors.product_title).strip()
+            product = config.ProductConfig(id=str(prid), name=title, url=url)
+            print(f"Practice target: {title}")
+            st = dict(state.DEFAULTS)  # in memory only
+            cart = executor.add_to_cart(page, cfg, product, st)
+            print(f"Cart: ok={cart.success} item={cart.item_name!r} qty={cart.quantity} "
+                  f"unit=Rs {cart.unit_price:.0f} total=Rs {cart.total_payable:.0f} "
+                  f"extra_items={cart.has_extra_items} {cart.error}")
+            chk = executor.checkout(page, cfg, product, cart, st, dry_run=True,
+                                    state_path=scratch_state)
+            print(f"Checkout: ok={chk.success} dry_run={chk.dry_run} "
+                  f"method={chk.payment_method} {chk.error}")
+            print(f"Pay Now matches (not clicked): {page.locator(cfg.selectors.pay_button).count()}")
+            ok = chk.success and chk.dry_run
+        except Exception as exc:
+            print(f"Practice failed: {exc}")
+        finally:
+            hardening.save_failure_capture(page, f"practice_{prid}")
+            print(f"Cart emptied afterwards: {executor.empty_cart(page, cfg)}")
+            context.close()
+    print("PRACTICE PASSED" if ok else "PRACTICE FAILED")
+    return 0 if ok else 1
+
+
 MODE_A_MUTE_SECONDS = 600
 
 
@@ -305,7 +346,7 @@ def handle_restock(page: Any, cfg: Config, product: Any, bot_state: dict[str, An
         return bot_state, False
 
     notifier.send(f"RESTOCK: {product.name} is IN STOCK. Adding to cart...", cfg, priority=True)
-    cart = executor.add_to_cart(page, cfg, product)
+    cart = executor.add_to_cart(page, cfg, product, bot_state)
 
     if cfg.mode == "B":
         if cart.success:
@@ -326,13 +367,14 @@ def handle_restock(page: Any, cfg: Config, product: Any, bot_state: dict[str, An
 
     if chk.success and chk.dry_run:
         notifier.send(
-            f"[DRY RUN] Would have paid for {product.name} via {chk.payment_method}.", cfg)
+            f"[DRY RUN] Would have ordered {product.name} x{cart.quantity} "
+            f"(Rs {cart.total_payable:.0f}, Cash on Delivery).", cfg)
         return bot_state, False
     if chk.success:
         notifier.send(
-            f"ORDER PLACED: {product.name}\nOrder ID: {chk.order_id}\n"
-            f"Paid via {chk.payment_method}\n"
-            f"Total spent so far: Rs {bot_state.get('total_spent', 0):.0f}",
+            f"ORDER PLACED: {product.name} x{cart.quantity}\nOrder ID: {chk.order_id}\n"
+            f"Cash on Delivery: keep Rs {cart.total_payable:.0f} ready for the rider.\n"
+            f"Total ordered so far: Rs {bot_state.get('total_spent', 0):.0f}",
             cfg, priority=True)
         return bot_state, True
     notifier.send(f"Checkout FAILED for {product.name}: {chk.error}", cfg, priority=True)
@@ -363,6 +405,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.export_session or args.import_session:
         return run_session_flow(cfg, export=args.export_session)
+
+    if args.practice:
+        return run_practice_flow(cfg, args.practice)
 
     # Load persistent state
     bot_state = state.load(args.state)

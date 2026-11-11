@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,12 @@ import yaml
 logger = logging.getLogger("hw_bot")
 
 MIN_POLLING_INTERVAL_SECONDS = 20
+
+
+MODE_C_SELECTORS = (
+    "bar_price", "cart_items", "cart_line_title", "quantity_stepper", "cart_minus", "checkout_button", "proceed_to_pay", "payment_frame", "cod_option",
+    "pay_button",
+)
 
 
 class ConfigError(ValueError):
@@ -94,6 +101,12 @@ class SelectorsConfig:
     order_confirmation: str = ""
     order_id: str = ""
     order_history: str = ""
+    # Web cart + Cash-on-Delivery checkout (F11).
+    cart_line_title: str = ""
+    cart_minus: str = ""
+    proceed_to_pay: str = ""
+    payment_frame: str = ""
+    cod_option: str = ""
 
 
 @dataclass(frozen=True)
@@ -268,29 +281,9 @@ def load_config(
 
     # Selectors
     sel_raw = raw.get("selectors") or {}
-    selectors = SelectorsConfig(
-        product_title=str(sel_raw.get("product_title", "")).strip(),
-        product_id=str(sel_raw.get("product_id", "")).strip(),
-        add_button=str(sel_raw.get("add_button", "")).strip(),
-        dismiss_modal=str(sel_raw.get("dismiss_modal", "")).strip(),
-        bar_price=str(sel_raw.get("bar_price", "")).strip(),
-        out_of_stock=str(sel_raw.get("out_of_stock", "")).strip(),
-        quantity_stepper=str(sel_raw.get("quantity_stepper", "")).strip(),
-        header_address=str(sel_raw.get("header_address", "")).strip(),
-        login_wall=str(sel_raw.get("login_wall", "")).strip(),
-        cart_open=str(sel_raw.get("cart_open", "")).strip(),
-        cart_items=str(sel_raw.get("cart_items", "")).strip(),
-        cart_address=str(sel_raw.get("cart_address", "")).strip(),
-        cart_total=str(sel_raw.get("cart_total", "")).strip(),
-        checkout_button=str(sel_raw.get("checkout_button", "")).strip(),
-        payment_methods=str(sel_raw.get("payment_methods", "")).strip(),
-        wallet_balance=str(sel_raw.get("wallet_balance", "")).strip(),
-        pay_button=str(sel_raw.get("pay_button", "")).strip(),
-        otp_input=str(sel_raw.get("otp_input", "")).strip(),
-        order_confirmation=str(sel_raw.get("order_confirmation", "")).strip(),
-        order_id=str(sel_raw.get("order_id", "")).strip(),
-        order_history=str(sel_raw.get("order_history", "")).strip(),
-    )
+    selectors = SelectorsConfig(**{
+        f.name: str(sel_raw.get(f.name) or "").strip() for f in dataclasses.fields(SelectorsConfig)
+    })
 
     # Telegram
     telegram = TelegramConfig(
@@ -390,15 +383,13 @@ def load_config(
             )
 
     if mode == "C":
-        missing_c = [
-            n for n in ("checkout_button", "pay_button", "order_confirmation")
-            if not getattr(selectors, n).strip()
-        ]
+        # Web checkout offers no Blinkit Money; Cash on Delivery is the only
+        # payment that needs no human (D9).
+        if payment.priority != ["cod"]:
+            raise ConfigError("Mode C supports only payment.priority: [cod] (web checkout)")
+        missing_c = [n for n in MODE_C_SELECTORS if not getattr(selectors, n).strip()]
         if missing_c:
-            raise ConfigError(
-                "Mode C requires these selectors: " + ", ".join(missing_c)
-                + ". Without them the bot can reach payment but cannot confirm the outcome."
-            )
+            raise ConfigError("Mode C requires these selectors: " + ", ".join(missing_c))
 
     return Config(
         products=products,

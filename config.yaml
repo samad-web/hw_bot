@@ -5,11 +5,11 @@
 # is the key the single-order lock is stored under. Both titles were verified
 # against the live pages on 2026-11-07.
 products:
-  - id: "799027"
-    name: "Hot Wheels 1985 Chevrolet K5 Blazer Die Cast Car"
-    url: "https://blinkit.com/prn/hot-wheels-1985-chevrolet-k5-blazer-die-cast-car/prid/799027"
+  - id: "1454828"
+    name: "Hot Wheels Fast & Furious Edition Toyota Supra Die Cast Car"
+    url: "https://blinkit.com/prn/x/prid/1454828"
     max_price_inr: 659        # listed Rs 549, +20% tolerance
-    quantity: 1
+    quantity: 1               # one unit per order; repeats wait for delivery (D14)
   - id: "1416802"
     name: "Hot Wheels 23 Ram 1500 Die Cast Car"
     url: "https://blinkit.com/prn/hot-wheels-23-ram-1500-die-cast-car/prid/1416802"
@@ -32,7 +32,7 @@ polling:
   jitter_seconds: 15
 
 payment:
-  priority: ["blinkit_wallet"]
+  priority: ["cod"]           # web checkout has no Blinkit Money (D9)
   max_order_value_inr: 700    # ceiling on any ONE order, incl. fees
   otp_relay_timeout_seconds: 120
 
@@ -73,18 +73,31 @@ selectors:
   dismiss_modal: 'div[class*="DownloadAppModal__ContinueLink"]'
   # Unit price shown in the sticky bar, used as a pre-cart sanity check.
   bar_price: 'div.tw-items-center.tw-justify-between.tw-p-3 div.tw-text-400.tw-font-bold' 
-  quantity_stepper: ""
+  quantity_stepper: 'div[class*="AddToCart__UpdatedButtonContainer"]'
   login_wall: ""
   cart_open: ""
-  cart_items: ""
+  # Web cart (/cart, mobile layout). Verified live 2026-11-11.
+  cart_items: 'div[class*="CartProduct__Container"]'
+  cart_line_title: 'div[class*="ProductTitle"]'
+  # Qty is the bare text node between the two stepper buttons (the icons are font
+  # glyphs that render as letters/digits, so never regex the whole container).
+  # Steppers report "outside of viewport", so the code JS-clicks them.
+  cart_minus: 'div[class*="AddToCart___StyledDiv-"]'
+  # Checkout: Proceed -> address sheet (picked by pincode) -> Proceed To Pay ->
+  # /checkout with the Zomato payment iframe. Verified to the Cash option 2026-11-11.
+  proceed_to_pay: 'div:has-text("Proceed To Pay"), button:has-text("Proceed To Pay")'
+  payment_frame: '#payment_widget'
+  cod_option: "div[title='Cash']"
   cart_address: ""
   cart_total: ""
 
-  # TODO Mode C only. Obtainable solely by walking a real checkout.
-  checkout_button: ""
+  # Mode C (Cash on Delivery).
+  checkout_button: 'text="Proceed"'
   payment_methods: ""
   wallet_balance: ""
-  pay_button: ""
+  # On the main page, not inside the iframe. Seen in page text; class unverified,
+  # so the practice run reports how many elements this matches.
+  pay_button: 'div:has-text("Pay Now"), button:has-text("Pay Now")'
   otp_input: ""
   order_confirmation: ""
   order_id: ""

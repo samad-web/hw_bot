@@ -54,6 +54,12 @@ FULL_SELECTORS = SelectorsConfig(
     order_confirmation="div.confirmation",
     order_id="span.order-id",
     order_history="div.order-history",
+    bar_price="div.bar-price",
+    cart_line_title="div.line-title",
+    cart_minus="div.minus",
+    proceed_to_pay="div.proceed-to-pay",
+    payment_frame="#payment_widget",
+    cod_option="div[title='Cash']",
 )
 
 
