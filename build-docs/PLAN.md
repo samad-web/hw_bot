@@ -27,6 +27,11 @@ Source of truth: `../blinkit-hotwheels-bot.md` (Sections 1–16). This plan refi
 | D6 | Every Blinkit selector starts as a TODO, resolved from real captured HTML | I cannot log into Blinkit. `main.py --capture` saves page HTML/screenshot to `logs/capture/` so selectors come from fact, not guesswork. |
 | D7 | Dependencies: `playwright`, `pyyaml`, `requests`. Nothing else. | |
 | D8 | WhatsApp via Evolution API added as a second **outbound** alert channel; Telegram keeps all inbound commands | User request, 2026-11-07. Inbound WhatsApp would need a public webhook server on the VPS — disproportionate for 6 commands. Base URL, instance id and destination number unverified (probe blocked). |
+| D9 | **Payment = Cash on Delivery via blinkit.com** (replaces D3 wallet) | 2026-11-11. Web has no Blinkit Money. Wallet would need app control over wireless ADB, which Android resets on every reboot (a human step). User chose COD. |
+| D10 | **Host = VPS, Blinkit traffic relayed through the user's old Android 16 phone (Tailscale exit node)** | VPS IP gets 403. The user's own home IP, not a rented proxy pool. No laptop. |
+| D11 | **Headful Chromium under Xvfb** on the VPS | `/checkout` Turnstile blocks headless; a plain headful browser passes. No challenge solving or spoofing. |
+| D12 | Keep watching the other car while one order is out for delivery | Restocks are short. The lock already serialises payments. |
+| D13 | F9 (Appium app-buyer) shelved | Superseded by F11. |
 
 ## 3. Known risks
 
@@ -51,6 +56,14 @@ Each has a doc in `features/`. Sequenced by dependency.
 | F5 | Cart automation (Mode B) | `05-cart.md` | Phase 4 |
 | F6 | Checkout and payment (Mode C) | `06-checkout.md` | Phase 5 |
 | F7 | Hardening (backoff, capture, recovery) | `07-hardening.md` | Phase 6 |
+
+| F8 | Multi-product | `08-multi-product.md` | — |
+| F9 | Appium app-buyer (SHELVED, D13) | `09-appium-app-buyer.md` | — |
+| F10 | Home relay + VPS headful deploy | `10-home-relay-vps.md` | — |
+| F11 | Web checkout, Cash on Delivery | `11-web-cod-checkout.md` | Phase 5 |
+| F12 | Delivery tracking | `12-delivery-tracking.md` | — |
+
+**2026-11-11 build order:** F10 gate test (VPS reaches `/checkout` through the phone) → F11 (dry run, then one supervised cheap COD order) → F12 → new Evolution GO id wired in → cut over: stop the laptop watcher, VPS live in Mode C. If the F10 gate fails, stop and report; nothing else gets built on it.
 
 F1 before everything (the lock must exist before any code can order). F3 before F5/F6 so failures are visible. F7 last, it tightens what exists.
 
