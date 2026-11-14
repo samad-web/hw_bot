@@ -14,6 +14,9 @@
   - `notifier.py` supports both Evolution GO (`/send/text`) and Evolution Node (`/message/sendText/{instance}`).
 - **2026-11-07 — Selectors live only in `config.yaml`.** No CSS string in any module. A Blinkit UI change must be a config edit.
 
+- **2026-11-14 — User: Zepto, Instamart, FirstCry are not reachable on the web; drive their apps on the phone, as planned for Blinkit (F9).** Proposed PLAN §7 (D15–D20, F13–F16), awaiting approval. I pushed back on a full AI agent (cost, latency, wrong taps with money) and recommended a deterministic watcher with an LLM only as a later fallback; user has not yet decided.
+- **2026-11-14 — D16 accepted:** user is fine with the manual step after a phone restart (re-enable wireless adb). Rest of PLAN §7 still awaiting approval.
+
 ## Constraints
 - Polling floor 20 s, hard, regardless of config. One account, one session, no parallelism.
 - No captcha solving, no stealth plugins, no SMS/OTP interception. Blocked → back off and alert.
@@ -25,6 +28,8 @@
 - Destination phone number for WhatsApp alerts (defaulted to `917806966124` in `.env`).
 
 ## Known issues
+- **2026-11-14 — User: no WhatsApp for phone-relay outages** (log only). Kept: restock, login/blocked/blind, routine (startup, heartbeat, "back after N min", car list updated). Orders and manual-check alerts are always sent. Risk accepted: a dead phone is only noticed when it comes back or in the heartbeat.
+- **2026-11-14 — "ALERT CHANNELS DOWN" popups on the laptop came from the TEST SUITE**, not the bot: tests that mock `notifier.send` with a bare MagicMock made the startup self-test fall through to `notify_local` (real beep + MessageBox). Fixed with an autouse fixture in `tests/conftest.py`. The bot does not run on the laptop; the stale local container was removed at the user's request.
 - **2026-11-14 — ~40% of VPS checks are `unknown_layout`:** over the slow relay the sticky stock bar has not rendered when the check runs (capture shows page body, no bar). The SSR JSON already carries `"product_id":"<prid>"` with `"product_state":"out_of_stock"`/`"is_sold_out"`/`"inventory"`; reading that would fix the blind checks. Not yet built.
 - **2026-11-14 — Stale local Docker container `blinkit_hotwheels_bot` (7-day-old image) crash-loops on the laptop** (config error each minute). Harmless but should be removed: `docker rm -f blinkit_hotwheels_bot`.
 - All Blinkit selectors in `config.yaml` are empty placeholders until `--capture` is run against a logged-in session. Until then, `checker.py` will report ERROR (`missing_selector`) rather than false OUT_OF_STOCK.

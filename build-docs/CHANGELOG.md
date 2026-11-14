@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## 2026-11-14 — fix(alerts): outages log-only; tests never pop up on the laptop
+- Relay outage (5+ min) is logged, not sent (user choice). "Connection back after N min" still sent.
+- `tests/conftest.py` autouse fixture stubs `notifier.notify_local`; test runs had been opening "ALERT CHANNELS DOWN" message boxes on the laptop.
+- Stale laptop Docker container `blinkit_hotwheels_bot` removed.
+
 ## 2026-11-14 — fix(alerts): stop WhatsApp spam
 - VPS logs (24h): 45 one-minute relay blips each sent RELAY OFFLINE + "back" (90 msgs), and 72 isolated `unknown_layout` reads each sent "Bot warning" (~160 msgs/day total).
 - RELAY OFFLINE now only after 5 min continuous outage (`RELAY_ALERT_AFTER_S`); recovery message only if the outage was announced, with its duration.

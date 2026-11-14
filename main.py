@@ -579,12 +579,9 @@ def main(argv: list[str] | None = None) -> int:
                         relay_down_since = relay_down_since or now
                         if not relay_alerted and now - relay_down_since >= RELAY_ALERT_AFTER_S:
                             relay_alerted = True
-                            notifier.send(
-                                ("RELAY OFFLINE: cannot reach Blinkit through the home phone. "
-                                 "Check it is on charger + Wi-Fi with Tailscale on. "
-                                 if os.environ.get("BROWSER_PROXY") else
-                                 "Cannot reach Blinkit (network down?). ")
-                                + "Not watching until it is back.", cfg, priority=True)
+                            # Log only, by user choice (2026-11-14): no WhatsApp for outages.
+                            logger.error("RELAY OFFLINE for 5+ min: cannot reach Blinkit%s.",
+                                         " through the home phone" if os.environ.get("BROWSER_PROXY") else "")
                         # Fixed 60s, not the growing backoff: a dead relay never reaches
                         # Blinkit, and a 15-min wait after it returns could miss a restock.
                         time.sleep(hardening.next_delay(1))

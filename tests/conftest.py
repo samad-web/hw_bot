@@ -6,6 +6,7 @@ than an edit in every test module.
 
 import pytest
 
+import notifier
 from config import (
     Config, ProductConfig, DeliveryConfig, PollingConfig, PaymentConfig,
     SafetyConfig, ReliabilityConfig, SelectorsConfig, TelegramConfig, EvolutionConfig,
@@ -110,3 +111,10 @@ def multi_config() -> Config:
         safety=SafetyConfig(max_orders_total=2, max_total_spend_inr=800),
         payment=PaymentConfig(max_order_value_inr=700),
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_desktop_popups(monkeypatch):
+    """Tests must never beep or open a message box on the developer's laptop
+    (2026-11-14: each test run popped 'ALERT CHANNELS DOWN' windows)."""
+    monkeypatch.setattr(notifier, "notify_local", lambda text: True)

@@ -171,14 +171,14 @@ def _run_loop(tmp_path, monkeypatch, gotos, checks, max_sleeps, step_s=60):
 
 
 def test_navigation_failure_skips_check_and_alerts_relay_once(tmp_path: Path, monkeypatch):
-    """F10: a failed goto (relay offline) must not check the stale previous DOM; an outage
-    past RELAY_ALERT_AFTER_S alerts once, and recovery is announced once."""
+    """F10: a failed goto (relay offline) must not check the stale previous DOM; User choice
+    2026-11-14: the outage itself is log-only; recovery after 5+ min is announced once."""
     from checker import CheckResult, CheckResultKind
     fail = Exception("ERR_SOCKS_CONNECTION_FAILED")
     checks = MagicMock(return_value=CheckResult(CheckResultKind.OUT_OF_STOCK, product_title="x"))
     sent = _run_loop(tmp_path, monkeypatch, [fail] * 7 + [None, None], checks, max_sleeps=9)
     assert checks.call_count == 2, "check runs only for the successful gotos, never the failed"
-    assert sum("RELAY OFFLINE" in t for t in sent) == 1
+    assert not any("RELAY OFFLINE" in t for t in sent), "outages are log-only (user choice)"
     assert sum(t.startswith("Connection to Blinkit is back") for t in sent) == 1
 
 

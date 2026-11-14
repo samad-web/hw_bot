@@ -4,6 +4,10 @@ Strategy: pure functions (validation, backoff, state, parsing) are unit-tested w
 
 ## Results (2026-11-07)
 
+### 2026-11-14 alerts: outage log-only + popup guard — 78 passed
+- `test_navigation_failure_skips_check_and_alerts_relay_once` now asserts NO "RELAY OFFLINE" message (requirement changed by user), recovery still once.
+- Autouse `_no_desktop_popups` fixture: verified no MessageBox process after a full run.
+
 ### 2026-11-14 alert debounce — 78 passed
 - `test_navigation_failure_skips_check_and_alerts_relay_once` (now with a fake clock), `test_short_relay_blip_sends_no_message`, `test_page_error_warns_once_per_streak_not_per_blip`, `test_login_error_warns_immediately_once`.
 
