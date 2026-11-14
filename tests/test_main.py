@@ -144,38 +144,70 @@ def test_loop_writes_state_to_the_path_given_by_state_flag(tmp_path: Path, monke
     assert not (Path.cwd() / "state.json.tmp").exists()
 
 
-def test_navigation_failure_skips_check_and_alerts_relay_once(tmp_path: Path, monkeypatch):
-    """F10: a failed goto (relay offline) must not check the stale previous DOM,
-    and must alert once per outage, then once on recovery."""
-    from checker import CheckResult, CheckResultKind
-
+def _run_loop(tmp_path, monkeypatch, gotos, checks, max_sleeps, step_s=60):
+    """Drive main() with a fake clock that advances step_s per sleep. Returns sent texts."""
     cfg_file = _write_mode_a_project(tmp_path)
-    page = MagicMock()
-    # fail, fail, then succeed
-    page.goto.side_effect = [Exception("ERR_SOCKS_CONNECTION_FAILED"),
-                             Exception("ERR_SOCKS_CONNECTION_FAILED"), None, None]
+    page = MagicMock(); page.goto.side_effect = gotos
     ctx = MagicMock(); ctx.new_page.return_value = page
     pw = MagicMock(); pw.chromium.launch_persistent_context.return_value = ctx
     pw_cm = MagicMock(); pw_cm.__enter__.return_value = pw
-
-    sleeps = {"n": 0}
+    clock = {"t": 1_000_000.0, "n": 0}
     def fake_sleep(_s):
-        sleeps["n"] += 1
-        if sleeps["n"] >= 4:
+        clock["n"] += 1; clock["t"] += step_s
+        if clock["n"] >= max_sleeps:
             raise SystemExit
-    checks = MagicMock(return_value=CheckResult(CheckResultKind.OUT_OF_STOCK, product_title="x"))
     sent = []
     monkeypatch.setenv("BROWSER_PROXY", "socks5://127.0.0.1:1055")
     monkeypatch.setattr(main, "sync_playwright", lambda: pw_cm)
     monkeypatch.setattr(main.time, "sleep", fake_sleep)
+    monkeypatch.setattr(main.time, "time", lambda: clock["t"])
     monkeypatch.setattr(main.notifier, "send", lambda t, c, priority=False: sent.append(t) or {"whatsapp": True})
     monkeypatch.setattr(main.notifier, "poll_commands", lambda cfg, st, sp=None: (st, False))
     monkeypatch.setattr(main.checker, "check", checks)
-
     with pytest.raises(SystemExit):
         main.main(["--config", str(cfg_file), "--env", str(tmp_path / ".env"),
                    "--state", str(tmp_path / "state.json")])
+    return sent
 
-    assert checks.call_count == 2, "check runs only for the 2 successful gotos, never the 2 failed"
+
+def test_navigation_failure_skips_check_and_alerts_relay_once(tmp_path: Path, monkeypatch):
+    """F10: a failed goto (relay offline) must not check the stale previous DOM; an outage
+    past RELAY_ALERT_AFTER_S alerts once, and recovery is announced once."""
+    from checker import CheckResult, CheckResultKind
+    fail = Exception("ERR_SOCKS_CONNECTION_FAILED")
+    checks = MagicMock(return_value=CheckResult(CheckResultKind.OUT_OF_STOCK, product_title="x"))
+    sent = _run_loop(tmp_path, monkeypatch, [fail] * 7 + [None, None], checks, max_sleeps=9)
+    assert checks.call_count == 2, "check runs only for the successful gotos, never the failed"
     assert sum("RELAY OFFLINE" in t for t in sent) == 1
     assert sum(t.startswith("Connection to Blinkit is back") for t in sent) == 1
+
+
+def test_short_relay_blip_sends_no_message(tmp_path: Path, monkeypatch):
+    """Spam fix: a 2-minute blip (2 failed gotos) is neither an outage nor a recovery."""
+    from checker import CheckResult, CheckResultKind
+    fail = Exception("ERR_SOCKS_CONNECTION_FAILED")
+    checks = MagicMock(return_value=CheckResult(CheckResultKind.OUT_OF_STOCK, product_title="x"))
+    sent = _run_loop(tmp_path, monkeypatch, [fail, fail, None, None], checks, max_sleeps=4)
+    assert not any("RELAY OFFLINE" in t or "is back" in t for t in sent)
+
+
+def test_page_error_warns_once_per_streak_not_per_blip(tmp_path: Path, monkeypatch):
+    """Spam fix: isolated unknown_layout reads stay silent; a streak of ERROR_ALERT_AFTER warns once."""
+    from checker import CheckResult, CheckResultKind
+    err = CheckResult(CheckResultKind.ERROR, error_kind="unknown_layout", message="no bar")
+    ok = CheckResult(CheckResultKind.OUT_OF_STOCK, product_title="x")
+    seq = [err, ok, err, ok] + [err] * 8
+    checks = MagicMock(side_effect=seq)
+    monkeypatch.setattr(main.hardening, "save_failure_capture", lambda *a, **k: None)
+    sent = _run_loop(tmp_path, monkeypatch, [None] * len(seq), checks, max_sleeps=len(seq))
+    assert sum(t.startswith("Bot warning") for t in sent) == 1
+
+
+def test_login_error_warns_immediately_once(tmp_path: Path, monkeypatch):
+    """A logged-out session never self-heals, so it alerts on the first failure, but only once."""
+    from checker import CheckResult, CheckResultKind
+    err = CheckResult(CheckResultKind.ERROR, error_kind="login", message="logged out")
+    checks = MagicMock(return_value=err)
+    monkeypatch.setattr(main.hardening, "save_failure_capture", lambda *a, **k: None)
+    sent = _run_loop(tmp_path, monkeypatch, [None] * 4, checks, max_sleeps=3)
+    assert sum(t.startswith("Bot warning") for t in sent) == 1

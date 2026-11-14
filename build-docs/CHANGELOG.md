@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## 2026-11-14 — fix(alerts): stop WhatsApp spam
+- VPS logs (24h): 45 one-minute relay blips each sent RELAY OFFLINE + "back" (90 msgs), and 72 isolated `unknown_layout` reads each sent "Bot warning" (~160 msgs/day total).
+- RELAY OFFLINE now only after 5 min continuous outage (`RELAY_ALERT_AFTER_S`); recovery message only if the outage was announced, with its duration.
+- Page-error warning only after 5 consecutive failed reads (`ERROR_ALERT_AFTER`), once per streak; login/blocked still alert at once, once.
+
 ## [Unreleased] - 2026-11-07
 
 ### Added

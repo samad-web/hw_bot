@@ -38,6 +38,10 @@ MOBILE_UA = ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
              "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
 
 
+RELAY_ALERT_AFTER_S = 300  # relay must be unreachable this long before we message
+ERROR_ALERT_AFTER = 5      # consecutive failed page reads before a warning
+
+
 def browser_options() -> dict[str, Any]:
     """Launch options for every unattended flow.
 
@@ -468,7 +472,11 @@ def main(argv: list[str] | None = None) -> int:
     last_heartbeat_ts = start_ts
     last_recycle_ts = start_ts
     last_blind_alert_ts = 0.0
-    relay_down = False  # one alert per outage, not one per failed page load
+    # A home relay blips for a minute many times a day (45 blips in 24h on 2026-11-14).
+    # Alert only on a real outage, and announce recovery only if we announced the outage.
+    relay_down_since: float | None = None
+    relay_alerted = False
+    error_alerted = False  # one page-error warning per streak of failed checks
 
     profile_dir = DEFAULT_PROFILE_DIR
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -568,8 +576,9 @@ def main(argv: list[str] | None = None) -> int:
                         cons = bot_state.get("consecutive_errors", 0) + 1
                         bot_state = state.save(bot_state, state_path, consecutive_errors=cons,
                                                last_status="ERROR", last_check_ts=int(now))
-                        if not relay_down:
-                            relay_down = True
+                        relay_down_since = relay_down_since or now
+                        if not relay_alerted and now - relay_down_since >= RELAY_ALERT_AFTER_S:
+                            relay_alerted = True
                             notifier.send(
                                 ("RELAY OFFLINE: cannot reach Blinkit through the home phone. "
                                  "Check it is on charger + Wi-Fi with Tailscale on. "
@@ -580,9 +589,11 @@ def main(argv: list[str] | None = None) -> int:
                         # Blinkit, and a 15-min wait after it returns could miss a restock.
                         time.sleep(hardening.next_delay(1))
                         continue
-                    if relay_down:
-                        relay_down = False
-                        notifier.send("Connection to Blinkit is back. Watching again.", cfg)
+                    if relay_alerted:
+                        notifier.send(
+                            f"Connection to Blinkit is back after "
+                            f"{(time.time() - relay_down_since) / 60:.0f} min. Watching again.", cfg)
+                    relay_down_since, relay_alerted = None, False
 
                     res = checker.check(page, cfg, product)
                     bot_state = state.save(bot_state, state_path,
@@ -595,7 +606,11 @@ def main(argv: list[str] | None = None) -> int:
                         bot_state = state.save(bot_state, state_path, consecutive_errors=cons)
                         if res.error_kind in ("unknown_layout", "login", "blocked"):
                             hardening.save_failure_capture(page, f"{product.id}_{res.error_kind}")
-                        if cons == 1 or res.error_kind in ("login", "blocked"):
+                        # Slow relay loads often miss the stock bar for one check; only a
+                        # streak (or a login/block, which never self-heals) is worth a message.
+                        if not error_alerted and (cons >= ERROR_ALERT_AFTER
+                                                  or res.error_kind in ("login", "blocked")):
+                            error_alerted = True
                             notifier.send(
                                 f"Bot warning on {product.name} ({res.error_kind}): {res.message}",
                                 cfg)
@@ -614,6 +629,7 @@ def main(argv: list[str] | None = None) -> int:
                     # assertion passed, so it doubles as proof we can read the page.
                     bot_state = state.save(bot_state, state_path,
                                            last_identity_ok_ts=int(now), consecutive_errors=0)
+                    error_alerted = False
 
                     if res.kind == CheckResultKind.IN_STOCK:
                         bot_state, bought = handle_restock(

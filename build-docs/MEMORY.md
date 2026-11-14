@@ -25,6 +25,8 @@
 - Destination phone number for WhatsApp alerts (defaulted to `917806966124` in `.env`).
 
 ## Known issues
+- **2026-11-14 — ~40% of VPS checks are `unknown_layout`:** over the slow relay the sticky stock bar has not rendered when the check runs (capture shows page body, no bar). The SSR JSON already carries `"product_id":"<prid>"` with `"product_state":"out_of_stock"`/`"is_sold_out"`/`"inventory"`; reading that would fix the blind checks. Not yet built.
+- **2026-11-14 — Stale local Docker container `blinkit_hotwheels_bot` (7-day-old image) crash-loops on the laptop** (config error each minute). Harmless but should be removed: `docker rm -f blinkit_hotwheels_bot`.
 - All Blinkit selectors in `config.yaml` are empty placeholders until `--capture` is run against a logged-in session. Until then, `checker.py` will report ERROR (`missing_selector`) rather than false OUT_OF_STOCK.
 
 - **2026-11-07 review:** three blockers fixed (stale page, `--state` not threaded, Docker single-file state mount). See CHANGELOG.

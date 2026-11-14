@@ -4,6 +4,9 @@ Strategy: pure functions (validation, backoff, state, parsing) are unit-tested w
 
 ## Results (2026-11-07)
 
+### 2026-11-14 alert debounce — 78 passed
+- `test_navigation_failure_skips_check_and_alerts_relay_once` (now with a fake clock), `test_short_relay_blip_sends_no_message`, `test_page_error_warns_once_per_streak_not_per_blip`, `test_login_error_warns_immediately_once`.
+
 36 tests passing across all features:
 
 - `tests/test_state.py` (4 tests):

@@ -31,8 +31,8 @@ Phone: Tailscale app, "Run as exit node", Always-on VPN, battery Unrestricted, c
 - Watcher block detection (F2/F7) is reused: a relay outage looks like a navigation failure.
 
 ## Edge cases
-- Phone offline (power cut, Wi-Fi down, Tailscale killed): SOCKS connect fails, so
-  the bot sends one "RELAY OFFLINE" alert, backs off and retries, and alerts again
+- Phone offline (power cut, Wi-Fi down, Tailscale killed): SOCKS connect fails; after 5 min
+  continuous outage (blips are silent) the bot sends one "RELAY OFFLINE" alert, backs off and retries, and alerts again
   when the relay recovers. It never falls back to the direct VPS IP: that IP is
   blocked, and hammering it could flag the account.
 - Phone reboot: Always-on VPN restarts Tailscale with no human step.
