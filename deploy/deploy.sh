@@ -28,7 +28,7 @@ ssh "$HOST" "mkdir -p '$REMOTE_DIR/data' '$REMOTE_DIR/logs' '$REMOTE_DIR/profile
 echo "==> Copying source"
 scp -q Dockerfile docker-compose.yml requirements.txt config.yaml \
        main.py config.py checker.py executor.py notifier.py state.py \
-       logger.py hardening.py "$HOST:$REMOTE_DIR/"
+       logger.py hardening.py watchlist_web.py "$HOST:$REMOTE_DIR/"
 
 echo "==> Copying secrets (never baked into the image)"
 scp -q .env session.json "$HOST:$REMOTE_DIR/"

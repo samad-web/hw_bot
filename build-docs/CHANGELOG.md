@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## 2026-11-14 — feat(watchlist-web): edit the car list from a tailnet-only page
+- `watchlist_web.py` + `hw_watchlist_web` container; `data/watchlist.json`; bot reloads it between cycles.
+- `store` field (blinkit/zepto/instamart/firstcry), link-host validation, ids derived from links. Non-Blinkit cars saved, not yet watched.
+- `max_orders_total` is a backstop cap, no longer an equality.
+
 ## 2026-11-14 — fix(alerts): outages log-only; tests never pop up on the laptop
 - Relay outage (5+ min) is logged, not sent (user choice). "Connection back after N min" still sent.
 - `tests/conftest.py` autouse fixture stubs `notifier.notify_local`; test runs had been opening "ALERT CHANNELS DOWN" message boxes on the laptop.

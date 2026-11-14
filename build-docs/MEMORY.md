@@ -28,6 +28,7 @@
 - Destination phone number for WhatsApp alerts (defaulted to `917806966124` in `.env`).
 
 ## Known issues
+- **2026-11-14 — F17 car-list editor: tailnet-only (user choice)**, no password; `http://hw-bot-vps:8080`. `safety.max_orders_total` is now a backstop cap (was "must equal sum of max_orders"), because the page edits the list but never config.yaml. Spend caps stay config-only.
 - **2026-11-14 — User: no WhatsApp for phone-relay outages** (log only). Kept: restock, login/blocked/blind, routine (startup, heartbeat, "back after N min", car list updated). Orders and manual-check alerts are always sent. Risk accepted: a dead phone is only noticed when it comes back or in the heartbeat.
 - **2026-11-14 — "ALERT CHANNELS DOWN" popups on the laptop came from the TEST SUITE**, not the bot: tests that mock `notifier.send` with a bare MagicMock made the startup self-test fall through to `notify_local` (real beep + MessageBox). Fixed with an autouse fixture in `tests/conftest.py`. The bot does not run on the laptop; the stale local container was removed at the user's request.
 - **2026-11-14 — ~40% of VPS checks are `unknown_layout`:** over the slow relay the sticky stock bar has not rendered when the check runs (capture shows page body, no bar). The SSR JSON already carries `"product_id":"<prid>"` with `"product_state":"out_of_stock"`/`"is_sold_out"`/`"inventory"`; reading that would fix the blind checks. Not yet built.

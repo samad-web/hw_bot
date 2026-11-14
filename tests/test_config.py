@@ -102,22 +102,18 @@ def test_mode_c_requires_positive_spend_ceilings(tmp_path: Path):
         load_config(cfg_file2, env_path=tmp_path / ".env")
 
 
-def test_max_orders_total_must_equal_sum_of_max_orders(tmp_path: Path):
-    """The overall limit restates the per-product limits, so the two cannot disagree."""
-    cfg_file = create_minimal_config(
-        tmp_path / "config.yaml",
-        safety={"max_orders_total": 2, "max_total_spend_inr": 800.0},
-    )
-    with pytest.raises(ConfigError, match="must equal the sum"):
-        load_config(cfg_file, env_path=tmp_path / ".env")
-
-    prod = {"id": "1", "name": "Hot Wheels A", "url": "https://blinkit.com/prn/x/prid/1",
+def test_max_orders_total_is_a_backstop_not_a_restatement(tmp_path: Path):
+    """F17: the car list is edited from the web, so max_orders_total became a cap set only
+    in config.yaml; it no longer has to equal the sum of per-car max_orders."""
+    prod = {"name": "Hot Wheels A", "url": "https://blinkit.com/prn/x/prid/1",
             "max_price_inr": 100.0, "max_orders": 3}
-    cfg_file = create_minimal_config(
-        tmp_path / "config.yaml", products=[prod],
-        safety={"max_orders_total": 3, "max_total_spend_inr": 800.0},
-    )
+    cfg_file = create_minimal_config(tmp_path / "config.yaml", products=[prod],
+                                     safety={"max_orders_total": 2, "max_total_spend_inr": 800.0})
     assert load_config(cfg_file, env_path=tmp_path / ".env").products[0].max_orders == 3
+    cfg_file = create_minimal_config(tmp_path / "config.yaml", products=[prod],
+                                     safety={"max_orders_total": 0, "max_total_spend_inr": 800.0})
+    with pytest.raises(ConfigError, match="max_orders_total must be >= 1"):
+        load_config(cfg_file, env_path=tmp_path / ".env")
 
 
 def test_duplicate_product_id_rejected(tmp_path: Path):

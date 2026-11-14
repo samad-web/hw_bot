@@ -6,8 +6,12 @@ frozen dataclasses. Fails fast on misconfiguration.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
+import re
+from urllib.parse import urlparse
 import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +22,15 @@ import yaml
 logger = logging.getLogger("hw_bot")
 
 MIN_POLLING_INTERVAL_SECONDS = 20
+
+# Store -> hosts its product links may come from (exact host or a subdomain).
+# shortcut: main web domains only; add the apps' share-link hosts once F13 sees real share links.
+STORES: dict[str, tuple[str, ...]] = {
+    "blinkit": ("blinkit.com",),
+    "zepto": ("zeptonow.com", "zepto.com"),
+    "instamart": ("swiggy.com",),
+    "firstcry": ("firstcry.com",),
+}
 
 
 MODE_C_SELECTORS = (
@@ -33,9 +46,10 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class ProductConfig:
-    """One watch target. ``id`` is the Blinkit prid: the stable key for state,
-    since Blinkit resolves product pages by prid and the URL slug is cosmetic."""
+    """One watch target. ``id`` is the state key: the Blinkit prid for Blinkit
+    (pages resolve by prid; the slug is cosmetic), ``<store>:<hash of url>`` elsewhere."""
     id: str = ""
+    store: str = "blinkit"
     name: str = ""
     url: str = ""
     max_price_inr: float = 0.0
@@ -178,11 +192,26 @@ def get_env(key: str, env_vars: dict[str, str], default: str = "") -> str:
     return os.environ.get(key, env_vars.get(key, default))
 
 
+def product_id(store: str, url: str) -> str:
+    """Derive the state key from the link, so the web editor never has to ask for it."""
+    if store == "blinkit":
+        m = re.search(r"/prid/(\d+)", url)
+        return m.group(1) if m else ""
+    return f"{store}:{hashlib.sha1(url.encode()).hexdigest()[:10]}"
+
+
 def load_config(
     config_path: str | Path = "config.yaml",
     env_path: str | Path = ".env",
+    watchlist_path: str | Path | None = None,
+    products_raw: list[Any] | None = None,
+    check_channels: bool = True,
 ) -> Config:
-    """Load config.yaml, overlay environment secrets, validate and return frozen Config."""
+    """Load config.yaml, overlay environment secrets, validate and return frozen Config.
+
+    The car list comes from ``products_raw`` if given (the web editor validating a
+    candidate), else ``watchlist_path`` if that file exists (F17), else config.yaml.
+    """
     cp = Path(config_path)
     if not cp.is_file():
         raise ConfigError(f"Config file not found: {config_path}")
@@ -208,21 +237,32 @@ def load_config(
             )
 
     # Products (watch targets)
-    prods_raw = raw.get("products")
+    prods_raw = products_raw
+    if prods_raw is None and watchlist_path is not None and Path(watchlist_path).is_file():
+        try:
+            prods_raw = json.loads(Path(watchlist_path).read_text(encoding="utf-8")).get("products")
+        except (ValueError, AttributeError) as exc:
+            raise ConfigError(f"{watchlist_path} is not a valid car list: {exc}") from exc
+    if prods_raw is None:
+        prods_raw = raw.get("products")
     if not isinstance(prods_raw, list) or not prods_raw:
-        raise ConfigError("config.yaml must define a non-empty 'products:' list")
-    products = tuple(
-        ProductConfig(
-            id=str(p.get("id", "")).strip(),
-            name=str(p.get("name", "")).strip(),
-            url=str(p.get("url", "")).strip(),
-            max_price_inr=float(p.get("max_price_inr", 0.0)),
-            quantity=int(p.get("quantity", 1)),
-            max_orders=int(p.get("max_orders", 1)),
+        raise ConfigError("The car list is empty: add at least one product")
+    try:
+        products = tuple(
+            ProductConfig(
+                store=(store := str(p.get("store") or "blinkit").strip().lower()),
+                id=str(p.get("id") or product_id(store, str(p.get("url", "")).strip())).strip(),
+                name=str(p.get("name", "")).strip(),
+                url=str(p.get("url", "")).strip(),
+                max_price_inr=float(p.get("max_price_inr") or 0.0),
+                quantity=int(p.get("quantity") or 1),
+                max_orders=int(p.get("max_orders") or 1),
+            )
+            for p in prods_raw
+            if isinstance(p, dict)
         )
-        for p in prods_raw
-        if isinstance(p, dict)
-    )
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"A car has a non-numeric price or order count: {exc}") from exc
     if len(products) != len(prods_raw):
         raise ConfigError("every entry under 'products:' must be a mapping")
 
@@ -244,7 +284,8 @@ def load_config(
     poll_raw = raw.get("polling") or {}
     # The floor is per HTTP request, and one cycle fetches a page per target,
     # so it scales with the number of products.
-    floor = MIN_POLLING_INTERVAL_SECONDS * len(products)
+    # Only Blinkit targets are fetched over the web; app stores run on the phone (F14).
+    floor = MIN_POLLING_INTERVAL_SECONDS * max(1, sum(p.store == "blinkit" for p in products))
     raw_interval = int(poll_raw.get("interval_seconds", 45))
     if raw_interval < floor:
         logger.warning(
@@ -309,11 +350,22 @@ def load_config(
     # Fail-fast validation
     ids = [p.id for p in products]
     for p in products:
+        label = p.name or p.url or "?"
+        if p.store not in STORES:
+            raise ConfigError(f"product '{label}': unknown store '{p.store}'. "
+                              f"Use one of: {', '.join(STORES)}")
+        host = (urlparse(p.url).hostname or "").lower()
+        if urlparse(p.url).scheme != "https" or not any(
+                host == d or host.endswith("." + d) for d in STORES[p.store]):
+            raise ConfigError(f"product '{label}': the link must be an https {p.store} link "
+                              f"({' or '.join(STORES[p.store])}), got '{p.url}'")
         if not p.id:
             raise ConfigError(
-                f"product '{p.name or p.url or '?'}' is missing its 'id' (the Blinkit prid "
+                f"product '{label}' is missing its 'id' (the Blinkit prid "
                 "from the product URL). It is the key the single-order lock is stored under."
             )
+        if p.store == "blinkit" and p.id != product_id("blinkit", p.url):
+            raise ConfigError(f"product '{label}': id {p.id} does not match the prid in its link")
         if ids.count(p.id) > 1:
             raise ConfigError(f"duplicate product id '{p.id}' under products:")
         if p.quantity < 1:
@@ -321,14 +373,10 @@ def load_config(
         if p.max_orders < 1:
             raise ConfigError(f"product {p.id}: max_orders must be >= 1, got {p.max_orders}")
 
-    # A deliberate second statement of the same number: a typo in one place
-    # cannot silently allow extra orders.
-    expected = sum(p.max_orders for p in products)
-    if safety.max_orders_total != expected:
-        raise ConfigError(
-            f"safety.max_orders_total ({safety.max_orders_total}) must equal the sum of "
-            f"products' max_orders ({expected})."
-        )
+    # Backstop across every car, set only in config.yaml (never from the web editor):
+    # the bot stops ordering after this many orders in total, whatever the car list says.
+    if safety.max_orders_total < 1:
+        raise ConfigError(f"safety.max_orders_total must be >= 1, got {safety.max_orders_total}")
 
     if mode == "C":
         if payment.max_order_value_inr <= 0:
@@ -354,7 +402,7 @@ def load_config(
 
     # A bot that cannot alert is useless, and in modes B/C it would spend money
     # with no way to tell you.
-    if not telegram.is_configured and not evolution.is_configured:
+    if check_channels and not telegram.is_configured and not evolution.is_configured:
         raise ConfigError(
             "No notification channel configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, "
             "or all four EVOLUTION_* variables, in .env"

@@ -27,7 +27,7 @@ def test_parse_args_overrides():
 def test_main_exits_if_uncertain_state(tmp_path: Path):
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(
-        "products: [{id: '1', name: 'Test', max_price_inr: 100}]\n"
+        "products: [{id: '1', name: 'Test', url: 'https://blinkit.com/prn/x/prid/1', max_price_inr: 100}]\n"
         "delivery: {label: 'Home'}\n"
         "mode: 'A'\n"
         "polling: {interval_seconds: 30}\n"
@@ -171,7 +171,7 @@ def _run_loop(tmp_path, monkeypatch, gotos, checks, max_sleeps, step_s=60):
 
 
 def test_navigation_failure_skips_check_and_alerts_relay_once(tmp_path: Path, monkeypatch):
-    """F10: a failed goto (relay offline) must not check the stale previous DOM; User choice
+    """F10: a failed goto (relay offline) must not check the stale previous DOM. User choice
     2026-11-14: the outage itself is log-only; recovery after 5+ min is announced once."""
     from checker import CheckResult, CheckResultKind
     fail = Exception("ERR_SOCKS_CONNECTION_FAILED")

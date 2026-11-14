@@ -124,5 +124,6 @@ logs/                  bot.log, capture/
 | F14 | Phone driver (adb over Tailscale, health, capture) | `14-phone-driver.md` |
 | F15 | Multi-store watchlist (store field, car list, per-store state keys) | `15-multi-store-watchlist.md` |
 | F16 | Store adapters: Zepto → Instamart → FirstCry (watch, then COD order) | `16-store-adapters.md` |
+| F17 | Car-list web editor (tailnet only), built 2026-11-14 at user request; covers F15's config part | `17-watchlist-web.md` |
 
 F13 gates everything: a store that fails it is dropped or made alert-only before any code. Then F14 → F15 → F16, one store at a time, each committed separately: alert-only, then dry run, then live.

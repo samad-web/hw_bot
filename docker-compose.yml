@@ -21,6 +21,7 @@ services:
 
   hw_bot:
     build: .
+    image: hw_bot:latest
     container_name: blinkit_hotwheels_bot
     restart: unless-stopped
     network_mode: service:tailscale   # reach the SOCKS port on 127.0.0.1
@@ -46,3 +47,23 @@ services:
       - TZ=Asia/Kolkata
       - BROWSER_PROXY=socks5://127.0.0.1:1055
       - BROWSER_HEADLESS=0
+
+  # Car-list editor (F17). Shares the tailscale container's network and publishes
+  # no port, so it is reachable only from the tailnet: http://hw-bot-vps:8080
+  # (or http://100.124.162.119:8080). Never add a `ports:` entry here.
+  watchlist_web:
+    image: hw_bot:latest
+    container_name: hw_watchlist_web
+    restart: unless-stopped
+    network_mode: service:tailscale
+    depends_on: [tailscale, hw_bot]
+    command: ["python", "watchlist_web.py"]
+    environment:
+      - TZ=Asia/Kolkata
+      - HOST=127.0.0.1
+      - PORT=8080
+      - CONFIG_PATH=/app/config.yaml
+      - WATCHLIST_PATH=/app/data/watchlist.json
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro

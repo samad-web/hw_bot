@@ -4,6 +4,11 @@ Strategy: pure functions (validation, backoff, state, parsing) are unit-tested w
 
 ## Results (2026-11-07)
 
+### 2026-11-14 F17 watchlist web — 91 passed
+- `tests/test_watchlist.py` (13): ac1 seed from config.yaml, ac2 save + derived ids, ac3 invalid link/fields/empty rejected and old file kept, delete/blank rows, ac4 CSRF, ac5 escaping, ac6 bot reload valid/invalid/unchanged, ac7 Blinkit-only.
+- `test_max_orders_total_must_equal_sum_of_max_orders` replaced by `..._is_a_backstop_not_a_restatement`: the rule changed by design (F17), not to make a test pass.
+- HTTP smoke test on a local server: GET 200, cross-site POST 403, bad link 400 with reason, good POST 303 + file written.
+
 ### 2026-11-14 alerts: outage log-only + popup guard — 78 passed
 - `test_navigation_failure_skips_check_and_alerts_relay_once` now asserts NO "RELAY OFFLINE" message (requirement changed by user), recovery still once.
 - Autouse `_no_desktop_popups` fixture: verified no MessageBox process after a full run.

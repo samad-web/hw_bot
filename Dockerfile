@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install --with-deps chromium
 
 # Copy application source code
-COPY config.py checker.py executor.py hardening.py logger.py notifier.py state.py main.py config.yaml ./
+COPY config.py checker.py executor.py hardening.py logger.py notifier.py state.py main.py watchlist_web.py config.yaml ./
 
 # Ensure volume directories exist
 RUN mkdir -p /app/profile /app/logs /app/data

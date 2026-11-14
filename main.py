@@ -42,6 +42,47 @@ RELAY_ALERT_AFTER_S = 300  # relay must be unreachable this long before we messa
 ERROR_ALERT_AFTER = 5      # consecutive failed page reads before a warning
 
 
+def watchlist_path(args: argparse.Namespace) -> Path:
+    """The web editor's car list (F17) lives beside state.json, in the mounted data dir."""
+    return Path(args.state).parent / "watchlist.json"
+
+
+def watched(cfg: Config, bot_state: dict[str, Any]) -> list[Any]:
+    """Targets this loop can check now: Blinkit only until the app stores land (F14-F16)."""
+    return [q for q in cfg.products
+            if q.store == "blinkit" and not state.is_bought(bot_state, q.id, q.max_orders)]
+
+
+def _mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def reload_watchlist(cfg: Config, args: argparse.Namespace,
+                     seen: float | None) -> tuple[Config, float | None]:
+    """Re-read the car list if the web editor changed it. A bad list never replaces a good one."""
+    mtime = _mtime(watchlist_path(args))
+    if mtime is None or mtime == seen:
+        return cfg, seen
+    try:
+        new = config.load_config(args.config, env_path=args.env,
+                                 watchlist_path=watchlist_path(args))
+    except config.ConfigError as exc:
+        logger.error("Car list change rejected: %s", exc)
+        notifier.send(f"Car list change REJECTED, still watching the old list: {exc}",
+                      cfg, priority=True)
+        return cfg, mtime
+    if args.mode:
+        new = dataclasses.replace(new, mode=args.mode)
+    logger.info("Car list reloaded: %d car(s).", len(new.products))
+    notifier.send("Car list updated:\n" + "\n".join(
+        f"   - [{q.store}] {q.name} (max Rs {q.max_price_inr:.0f}, x{q.max_orders})"
+        for q in new.products), new)
+    return new, mtime
+
+
 def browser_options() -> dict[str, Any]:
     """Launch options for every unattended flow.
 
@@ -142,7 +183,7 @@ def run_login_flow(cfg: Config, profile_dir: Path = DEFAULT_PROFILE_DIR) -> int:
             **{**browser_options(), "headless": False},
         )
         page = context.new_page()
-        target_url = (cfg.products[0].url if cfg.products else "") or "https://blinkit.com"
+        target_url = next((q.url for q in cfg.products if q.store == "blinkit"), "https://blinkit.com")
         try:
             page.goto(target_url)
         except Exception as e:
@@ -191,7 +232,7 @@ def run_session_flow(cfg: Config, export: bool,
                 # delivery location there - so visit before exporting.
                 page = context.new_page()
                 try:
-                    url = (cfg.products[0].url if cfg.products else "") or "https://blinkit.com"
+                    url = next((q.url for q in cfg.products if q.store == "blinkit"), "https://blinkit.com")
                     page.goto(url, wait_until="networkidle", timeout=60000)
                     page.wait_for_timeout(3000)
                 except Exception as exc:
@@ -252,7 +293,7 @@ def run_capture_flow(cfg: Config, profile_dir: Path = DEFAULT_PROFILE_DIR) -> in
             **browser_options(),
         )
         page = context.new_page()
-        for product in cfg.products:
+        for product in (q for q in cfg.products if q.store == "blinkit"):
             url = product.url or "https://blinkit.com"
             logger.info("Capturing %s (%s)...", product.id or "home", url)
             try:
@@ -391,7 +432,8 @@ def main(argv: list[str] | None = None) -> int:
     bot_logger.setup_logger()
 
     try:
-        cfg = config.load_config(args.config, env_path=args.env)
+        cfg = config.load_config(args.config, env_path=args.env,
+                                 watchlist_path=watchlist_path(args))
     except config.ConfigError as exc:
         logger.critical("Configuration error: %s", exc)
         print(f"Error: {exc}", file=sys.stderr)
@@ -434,8 +476,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # Startup greeting & self-test
     mode_desc = f"Mode {cfg.mode}" + (" (DRY RUN)" if args.dry_run else "")
-    remaining = [q for q in cfg.products if not state.is_bought(bot_state, q.id, q.max_orders)]
+    remaining = watched(cfg, bot_state)
     target_lines = "\n".join(f"   - {q.name} (max Rs {q.max_price_inr:.0f})" for q in remaining)
+    waiting = [q for q in cfg.products if q.store != "blinkit"]
+    if waiting:
+        target_lines += (f"\n- {len(waiting)} car(s) on Zepto/Instamart/FirstCry saved; "
+                         "watched once phone app support is built")
     greeting = (
         f"Blinkit Hot Wheels Bot started\n"
         f"- Watching {len(remaining)} of {len(cfg.products)} target(s):\n{target_lines}\n"
@@ -474,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
     last_blind_alert_ts = 0.0
     # A home relay blips for a minute many times a day (45 blips in 24h on 2026-11-14).
     # Alert only on a real outage, and announce recovery only if we announced the outage.
+    seen_watchlist = _mtime(watchlist_path(args))
     relay_down_since: float | None = None
     relay_alerted = False
     error_alerted = False  # one page-error warning per streak of failed checks
@@ -519,6 +566,10 @@ def main(argv: list[str] | None = None) -> int:
                     logger.info("Stop requested via Telegram command.")
                     break
 
+                # Car-list edits from the web editor, picked up between cycles only,
+                # never in the middle of a checkout.
+                cfg, seen_watchlist = reload_watchlist(cfg, args, seen_watchlist)
+
                 if bot_state.get("paused"):
                     time.sleep(10)
                     continue
@@ -540,7 +591,7 @@ def main(argv: list[str] | None = None) -> int:
                 now = time.time()
                 if now - last_heartbeat_ts >= cfg.reliability.heartbeat_hours * 3600:
                     last_heartbeat_ts = now
-                    pending = [q for q in cfg.products if not state.is_bought(bot_state, q.id, q.max_orders)]
+                    pending = watched(cfg, bot_state)
                     notifier.send(
                         f"Heartbeat: watching {len(pending)} target(s), last check "
                         f"{bot_state.get('last_status', 'n/a')}. Bought "
@@ -549,7 +600,12 @@ def main(argv: list[str] | None = None) -> int:
                     )
 
                 # 4. One pass over every target still outstanding.
-                targets = [q for q in cfg.products if not state.is_bought(bot_state, q.id, q.max_orders)]
+                targets = watched(cfg, bot_state)
+                if not targets and any(not state.is_bought(bot_state, q.id, q.max_orders)
+                                       for q in cfg.products):
+                    # Only app-store cars left: idle until the list changes or support lands.
+                    time.sleep(cfg.polling.interval_seconds)
+                    continue
                 if not targets:
                     notifier.send(
                         f"All {len(cfg.products)} targets ordered. Total spent Rs "
