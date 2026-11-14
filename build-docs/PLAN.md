@@ -88,11 +88,41 @@ logs/                  bot.log, capture/
 
 `docker compose up` runs the bot; it survives `kill -9` and reboot; heartbeat and alerts arrive; it reports OUT_OF_STOCK correctly for the target product; all tests pass; `--dry-run` never presses pay; Section 13 checklist and the requirement→code map are complete in `TESTING.md`.
 
-## 7. Open — needs your input before F2 can be finished
+## 7. Phase 2: more stores through their Android apps (PROPOSED 2026-11-14, awaiting approval)
 
-1. Exact Hot Wheels product and its Blinkit URL (or search keyword).
-2. Delivery address: saved label on the account, plus lat/lng and pincode.
-3. `max_price_inr` and `max_order_value_inr`.
-4. Telegram bot token + your chat id (into `.env`, never the repo).
-5. Git: no repo exists here. Create one and push to GitHub? Which remote?
-6. Evolution API: confirm the API base URL, the instance identifier the route accepts (name vs the UUID), and the destination WhatsApp number in E.164. Also whether you want me to probe the instance (needs permission to send the token to that host).
+(The original §7 open questions were all answered 2026-11-07..12; see MEMORY.)
+
+**Goal.** Watch the user's car list on Zepto, Swiggy Instamart and FirstCry as well as Blinkit, and order them by driving each store's **real Android app on the home relay phone**. User direction: these stores are not reachable on the web. Blinkit stays on the proven web path (F11).
+
+**Out of scope.** UPI PIN / card / OTP automation; rooting, Magisk, integrity spoofing, emulators; an LLM in the polling loop (D18).
+
+### Proposed decisions
+| # | Decision | Why |
+|---|---|---|
+| D15 | Drive apps with plain `adb` (`am start` deep link, `uiautomator dump`, `input tap`), **not Appium** | Appium needs a Node + Java server on the VPS; the three operations we need are built into adb. `app_buyer.py` (Appium, capture only) is replaced. |
+| D16 | VPS reaches the phone by **wireless ADB over Tailscale** (`100.90.34.88:5555`) | The phone is already the relay and on the tailnet, so stores see the same home IP. **Cost:** Android turns ADB-over-TCP off on every reboot; re-enabling is one human step (laptop USB `adb tcpip 5555`). Bot alerts "PHONE ADB LOST" once per outage. |
+| D17 | **Pay = Cash on Delivery only.** A store without COD for this account is **alert-only** | No UPI PIN / card automation, ever (existing constraint). |
+| D18 | Deterministic watcher, **no AI agent in the loop** (v1) | An agent costs money and seconds on every check; restocks sell out in minutes; a wrong tap spends money. Later option: LLM reads a screen dump only when the fixed rules fail. |
+| D19 | Car list = per-store **share links** pasted into `config.yaml` | Every app's Share button gives a URL with the product id. No search automation. |
+| D20 | One phone = one foreground app: app checks run **serially** | Parallel needs more phones. Sets the speed ceiling below. |
+
+### Known risks
+| Risk | Impact | Mitigation |
+|---|---|---|
+| One in-app check ≈ 8–12 s (deep link + render + dump) | 10 cars × 3 apps ≈ 30 checks ≈ 5 min per round | Short list; Blinkit stays on the faster web path; per-store priority. |
+| Phone must stay unlocked, screen on, charging | Watching stops if it locks; an unlocked phone with shopping apps sits at home | "Stay awake while charging"; screen lock off or Smart Lock at home. User's call: security trade-off. |
+| Phone reboot / power cut disables wireless ADB | App stores blind until a human re-enables | Debounced alert; Blinkit web watching continues. |
+| Store has no COD for the account | No auto-order there | Alert-only for that store, found in F13 before building. |
+| Deep link opens website/home, not the product | Can't check stock | F13 tests it first; in-app search only if needed. |
+| Automating these apps breaks their ToS | Account restriction | ≥20 s floor per store, one account each, no evasion. Same acceptance as Blinkit. |
+| App UI updates | Selector drift | Text-based matching, capture + alert on unknown screen (as web `unknown_layout`). |
+
+### Features, build order
+| # | Feature | Doc |
+|---|---|---|
+| F13 | **Feasibility spike** (no product code): per app, deep link → product, stock visible in dump, COD at checkout | `13-app-store-spike.md` |
+| F14 | Phone driver (adb over Tailscale, health, capture) | `14-phone-driver.md` |
+| F15 | Multi-store watchlist (store field, car list, per-store state keys) | `15-multi-store-watchlist.md` |
+| F16 | Store adapters: Zepto → Instamart → FirstCry (watch, then COD order) | `16-store-adapters.md` |
+
+F13 gates everything: a store that fails it is dropped or made alert-only before any code. Then F14 → F15 → F16, one store at a time, each committed separately: alert-only, then dry run, then live.
